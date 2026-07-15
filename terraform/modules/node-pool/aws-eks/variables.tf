@@ -24,8 +24,35 @@ variable "capacity_type" {
 }
 
 variable "ami_type" {
+  description = <<-EOT
+    EKS-optimized AMI family for the managed node group. Bottlerocket is a
+    drop-in swap here — EKS handles the bootstrap/join process for managed
+    node groups regardless of AMI family, so no user_data/launch-template
+    changes are required to switch. Two things do change operationally:
+    Bottlerocket has no shell/SSH — use the built-in admin/control
+    container (or SSM) for node-level debugging instead — and its root
+    volume is split (OS partition + separate data partition for
+    containerd/kubelet), see `bottlerocket_data_volume_size_gb` below.
+  EOT
   type    = string
   default = "AL2023_x86_64_STANDARD"
+
+  validation {
+    condition = contains([
+      "AL2023_x86_64_STANDARD",
+      "AL2023_ARM_64_STANDARD",
+      "BOTTLEROCKET_x86_64",
+      "BOTTLEROCKET_ARM_64",
+      "BOTTLEROCKET_x86_64_NVIDIA",
+    ], var.ami_type)
+    error_message = "ami_type must be one of: AL2023_x86_64_STANDARD, AL2023_ARM_64_STANDARD, BOTTLEROCKET_x86_64, BOTTLEROCKET_ARM_64, BOTTLEROCKET_x86_64_NVIDIA."
+  }
+}
+
+variable "bottlerocket_data_volume_size_gb" {
+  description = "Size of Bottlerocket's separate data volume (containerd/kubelet storage). Ignored for non-Bottlerocket ami_type."
+  type        = number
+  default     = 50
 }
 
 variable "min_size" {
@@ -62,16 +89,8 @@ variable "tags" {
   default = {}
 }
 
-variable "use_karpenter" {
-  description = <<-EOT
-    Out of scope for this assignment's implementation — structured as a flag
-    so the decision is explicit rather than silently defaulted. When true,
-    this module should provision only enough EKS-managed capacity to run
-    Karpenter itself, and node provisioning for the workload becomes
-    Karpenter NodePool/EC2NodeClass CRDs applied via the k8s-platform module
-    instead of an aws_eks_node_group. Left unimplemented here; the managed
-    node group path below is the default and the fully-tested path.
-  EOT
-  type    = bool
-  default = false
-}
+# Note: Karpenter is implemented as a separate module
+# (modules/node-pool/karpenter), not as a flag here — this module always
+# represents a managed-node-group pool, used either as the sole worker
+# capacity or, in Karpenter mode, as the small fixed-size "system" pool
+# that hosts Karpenter itself. See the top-level terraform/README.md.

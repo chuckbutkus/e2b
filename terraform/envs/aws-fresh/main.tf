@@ -26,10 +26,20 @@ module "node_pool" {
   cluster_name   = module.cluster.cluster_name
   subnet_ids     = module.network.private_subnet_ids
   instance_types = var.node_instance_types
-  min_size       = var.node_min_size
-  max_size       = var.node_max_size
-  desired_size   = var.node_desired_size
-  tags           = var.tags
+  ami_type       = var.node_ami_type
+
+  # System-only sizing when Karpenter owns workload capacity; full sizing
+  # otherwise. See variables.tf for why these differ so much.
+  min_size     = var.enable_karpenter ? var.system_node_min_size : var.node_min_size
+  max_size     = var.enable_karpenter ? var.system_node_max_size : var.node_max_size
+  desired_size = var.enable_karpenter ? var.system_node_desired_size : var.node_desired_size
+
+  # Karpenter's own controller pod must land on this node group, never on
+  # a node Karpenter itself provisions (see karpenter module's helm_release
+  # nodeSelector) — this label is what that selector matches against.
+  labels = var.enable_karpenter ? { "karpenter.sh/controller" = "true" } : {}
+
+  tags = var.tags
 
   depends_on = [module.cluster]
 }
@@ -90,6 +100,27 @@ module "k8s_platform" {
   cluster_name                = module.cluster.cluster_name
   region                      = var.region
   cluster_autoscaler_role_arn = module.cluster_autoscaler_irsa.role_arn
+  install_cluster_autoscaler  = !var.enable_karpenter # Karpenter replaces it; running both fights over node count
 
   depends_on = [module.node_pool]
+}
+
+module "karpenter" {
+  count  = var.enable_karpenter ? 1 : 0
+  source = "../../modules/node-pool/karpenter"
+
+  cluster_name               = module.cluster.cluster_name
+  cluster_endpoint           = module.cluster.cluster_endpoint
+  region                     = var.region
+  vpc_id                     = module.network.vpc_id
+  private_subnet_ids         = module.network.private_subnet_ids
+  cluster_security_group_id  = module.cluster.cluster_security_group_id
+  oidc_provider_arn          = module.cluster.oidc_provider_arn
+  oidc_issuer_url            = module.cluster.cluster_oidc_issuer_url
+  ami_family                 = var.karpenter_ami_family
+  tags                       = var.tags
+
+  depends_on = [module.k8s_platform] # needs the system node group Ready
+                                       # (via node_pool) and cluster autoscaler
+                                       # decision already settled before install
 }

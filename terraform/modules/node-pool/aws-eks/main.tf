@@ -1,5 +1,39 @@
 data "aws_partition" "current" {}
 
+locals {
+  is_bottlerocket = startswith(var.ami_type, "BOTTLEROCKET")
+}
+
+resource "aws_launch_template" "this" {
+  name_prefix = "${var.cluster_name}-"
+
+  # Bottlerocket splits its root disk into an OS partition and a separate
+  # data partition (containerd/kubelet storage lives on the latter,
+  # conventionally /dev/xvdb) — the default size is small, so size it
+  # explicitly. AL2023 uses a single root volume at /dev/xvda instead.
+  block_device_mappings {
+    device_name = local.is_bottlerocket ? "/dev/xvdb" : "/dev/xvda"
+    ebs {
+      volume_size           = local.is_bottlerocket ? var.bottlerocket_data_volume_size_gb : 50
+      volume_type           = "gp3"
+      encrypted             = true
+      delete_on_termination = true
+    }
+  }
+
+  metadata_options {
+    http_tokens                 = "required" # IMDSv2 only — no v1 fallback
+    http_put_response_hop_limit = 2
+  }
+
+  tag_specifications {
+    resource_type = "instance"
+    tags          = var.tags
+  }
+
+  tags = var.tags
+}
+
 resource "aws_iam_role" "node" {
   name = "${var.cluster_name}-eks-node"
 
@@ -36,6 +70,11 @@ resource "aws_eks_node_group" "this" {
   instance_types = var.instance_types
   capacity_type  = var.capacity_type
   ami_type       = var.ami_type
+
+  launch_template {
+    id      = aws_launch_template.this.id
+    version = aws_launch_template.this.latest_version
+  }
 
   scaling_config {
     min_size     = var.min_size
