@@ -1,0 +1,154 @@
+# Default values for sre-workload.
+# Cloud-specific overrides live in values-aws.yaml / values-gcp.yaml and are
+# merged on top of this file with `-f values.yaml -f values-<cloud>.yaml`.
+
+image:
+  repository: ghcr.io/e2b-dev/sre-interview
+  tag: latest
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+# - name: ghcr-pull-secret   # only needed if the image is/becomes private
+
+nameOverride: ""
+fullnameOverride: ""
+
+replicaCount: 3
+
+# -----------------------------------------------------------------------
+# Confirmed against the running image (docker run + curl):
+#   - Port 8080 is the app port. All paths return 200 (catch-all), so
+#     /healthz and /readyz aren't differentiated health checks — they're
+#     just liveness-of-process signals. Still valid for k8s probes since
+#     only the status code is checked.
+#   - Port 9090 ("internal server" per container logs) is a real router
+#     but its purpose is unconfirmed (not /metrics, not standard pprof).
+#     Deliberately NOT exposed anywhere in this chart — see README.
+# -----------------------------------------------------------------------
+service:
+  type: ClusterIP
+  port: 8080
+  targetPort: 8080
+
+probes:
+  type: http # http | tcp | exec
+  path: /healthz
+  readyPath: /readyz
+  startup:
+    failureThreshold: 30 # 30 * 5s = 150s to boot before killed
+    periodSeconds: 5
+  readiness:
+    initialDelaySeconds: 0
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+  liveness:
+    initialDelaySeconds: 0
+    periodSeconds: 15
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+  # scale-down slower than scale-up so we don't flap under bursty load
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 25
+          periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 30
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+rollout:
+  strategy: RollingUpdate
+  maxUnavailable: 0
+  maxSurge: 25%
+
+topologySpread:
+  enabled: true
+  maxSkew: 1
+  topologyKey: topology.kubernetes.io/zone
+  whenUnsatisfiable: ScheduleAnyway # DoNotSchedule is stricter but risks
+                                    # unschedulable pods on small/dev clusters
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {} # populated per-cloud (IRSA role ARN / GCP SA email)
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+networkPolicy:
+  enabled: true
+  # Extra ingress/egress rules layered on top of the default-deny baseline.
+  # Empty by default; customers/environments add what the workload actually
+  # needs to talk to (DNS egress is always allowed, see templates).
+  extraIngress: []
+  extraEgress: []
+
+ingress:
+  enabled: false # off by default; each cloud overlay/customer turns this on
+                  # with their own ingressClassName + TLS config
+  className: nginx
+  annotations: {}
+  host: ""
+  tls:
+    enabled: false
+    secretName: ""
+
+serviceMonitor:
+  enabled: false # requires Prometheus Operator CRDs; opt-in only
+  interval: 30s
+  path: /metrics
+
+# storageClassName override; empty = cluster default. Only relevant if a
+# future revision of this chart adds a PVC (workload is currently assumed
+# stateless — TODO(confirm-against-image)).
+storageClassName: ""
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+extraEnv: []
+# - name: LOG_LEVEL
+#   value: info
+
+extraEnvFrom: []
+# - configMapRef:
+#     name: sre-workload-extra-config

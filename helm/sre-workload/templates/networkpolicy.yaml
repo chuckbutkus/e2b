@@ -1,0 +1,39 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "sre-workload.fullname" . }}
+  labels:
+    {{- include "sre-workload.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "sre-workload.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Baseline: allow traffic on the app port from anywhere in-cluster.
+    # Tighten this with a namespaceSelector/podSelector (e.g. restrict to
+    # the ingress-controller namespace) once the real traffic topology is
+    # known — left permissive-within-cluster by default so the chart
+    # doesn't silently break ingress routing for every customer.
+    - from: []
+      ports:
+        - protocol: TCP
+          port: {{ .Values.service.targetPort }}
+    {{- with .Values.networkPolicy.extraIngress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  egress:
+    # DNS is always required regardless of what else the workload talks to.
+    - to: []
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    {{- with .Values.networkPolicy.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}

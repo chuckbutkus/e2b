@@ -1,0 +1,15 @@
+apiVersion: v2
+name: sre-workload
+description: >-
+  Production deployment of ghcr.io/e2b-dev/sre-interview for the E2B SRE
+  assignment. Cloud-agnostic: all cloud-specific behavior is confined to
+  values overlays (values-aws.yaml / values-gcp.yaml), never to templates.
+type: application
+version: 0.1.0
+appVersion: "latest"
+keywords:
+  - sre
+  - e2b
+maintainers:
+  - name: Chuck
+home: https://github.com/e2b-dev/sre-interview

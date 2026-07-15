@@ -1,0 +1,21 @@
+# Overlay for AWS (EKS). Apply with:
+#   helm install sre-workload ./sre-workload -f values.yaml -f values-aws.yaml \
+#     --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=<IRSA_ROLE_ARN>
+
+serviceAccount:
+  annotations:
+    # Populated by Terraform output (IRSA role) at deploy time — see
+    # modules/irsa-or-workload-identity/aws in the terraform/ tree.
+    eks.amazonaws.com/role-arn: ""
+
+storageClassName: gp3
+
+ingress:
+  enabled: true
+  className: nginx # default choice for portability; set to "alb" and add
+                    # alb.ingress.kubernetes.io/* annotations if the
+                    # customer wants native ALB integration instead
+  annotations: {}
+
+nodeSelector:
+  kubernetes.io/os: linux

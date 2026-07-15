@@ -1,0 +1,19 @@
+# Overlay for GCP (GKE). Apply with:
+#   helm install sre-workload ./sre-workload -f values.yaml -f values-gcp.yaml \
+#     --set serviceAccount.annotations."iam\.gke\.io/gcp-service-account"=<GSA_EMAIL>
+
+serviceAccount:
+  annotations:
+    # Populated by Terraform output (Workload Identity binding) at deploy
+    # time — see modules/irsa-or-workload-identity/gcp in the terraform/ tree.
+    iam.gke.io/gcp-service-account: ""
+
+storageClassName: standard-rwo # pd-ssd backed dynamic provisioning on GKE
+
+ingress:
+  enabled: true
+  className: nginx # default choice for portability; GKE-native Gateway API
+                    # is documented as an alternative in docs/ARCHITECTURE.md
+
+nodeSelector:
+  kubernetes.io/os: linux

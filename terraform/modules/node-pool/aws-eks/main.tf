@@ -1,0 +1,74 @@
+data "aws_partition" "current" {}
+
+resource "aws_iam_role" "node" {
+  name = "${var.cluster_name}-eks-node"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        Service = "ec2.amazonaws.com"
+      }
+      Action = "sts:AssumeRole"
+    }]
+  })
+
+  tags = var.tags
+}
+
+resource "aws_iam_role_policy_attachment" "node_policies" {
+  for_each = toset([
+    "AmazonEKSWorkerNodePolicy",
+    "AmazonEKS_CNI_Policy",
+    "AmazonEC2ContainerRegistryReadOnly",
+  ])
+  role       = aws_iam_role.node.name
+  policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/${each.value}"
+}
+
+resource "aws_eks_node_group" "this" {
+  cluster_name    = var.cluster_name
+  node_group_name = "${var.cluster_name}-default"
+  node_role_arn   = aws_iam_role.node.arn
+  subnet_ids      = var.subnet_ids
+
+  instance_types = var.instance_types
+  capacity_type  = var.capacity_type
+  ami_type       = var.ami_type
+
+  scaling_config {
+    min_size     = var.min_size
+    max_size     = var.max_size
+    desired_size = var.desired_size
+  }
+
+  # Managed node groups replace nodes one at a time by default via this
+  # block — keep max_unavailable low so a node-group update doesn't take
+  # out capacity faster than pods can reschedule elsewhere.
+  update_config {
+    max_unavailable = 1
+  }
+
+  labels = var.labels
+
+  dynamic "taint" {
+    for_each = var.taints
+    content {
+      key    = taint.value.key
+      value  = taint.value.value
+      effect = taint.value.effect
+    }
+  }
+
+  tags = var.tags
+
+  depends_on = [aws_iam_role_policy_attachment.node_policies]
+
+  lifecycle {
+    # cluster-autoscaler/Karpenter own desired_size at runtime once
+    # deployed — without this, every `terraform apply` would fight the
+    # autoscaler and forcibly reset replica count back to var.desired_size.
+    ignore_changes = [scaling_config[0].desired_size]
+  }
+}
