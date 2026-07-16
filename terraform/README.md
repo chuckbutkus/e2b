@@ -1,13 +1,15 @@
-# Terraform — AWS EKS module tree
+# Terraform — Multi-cloud (AWS EKS + GCP GKE) module tree
 
 ## What's built vs. documented-only
 
 | Scenario | Status |
 |---|---|
-| Fresh VPC + fresh EKS cluster | **Fully built** — `envs/aws-fresh` |
-| Existing/BYO VPC + fresh EKS cluster | **Fully built** — `envs/aws-existing-vpc` |
-| Existing VPC + existing/BYO EKS cluster | Module exists (`modules/cluster/existing`) and is wired to the same output contract, but **no env composing it is included yet** — see below |
-| GCP (GKE) | Not started in this pass — same module pattern (`modules/network/gcp`, `modules/cluster/gcp-gke`) would follow, per the original plan |
+| AWS: Fresh VPC + fresh EKS cluster | **Fully built** — `envs/aws-fresh` |
+| AWS: Existing/BYO VPC + fresh EKS cluster | **Fully built** — `envs/aws-existing-vpc` |
+| AWS: Existing VPC + existing/BYO EKS cluster | Module exists (`modules/cluster/existing`), no composed env yet — see below |
+| GCP: Fresh VPC + fresh GKE cluster | **Fully built** — `envs/gcp-fresh` |
+| GCP: Existing/BYO VPC or cluster | Modules exist (`modules/network/gcp-existing`, `modules/cluster/gcp-gke-existing`), no composed env yet — same status as the AWS BYO-cluster gap |
+| Azure | Not started |
 
 Being explicit about this rather than quietly shipping only the two envs and calling it "done": `modules/cluster/existing` is real code (data-source lookups + the assumed-existing-OIDC-provider documented in its own comments), just not yet composed into a full `envs/aws-existing-cluster` example. Wiring that up is mechanical — copy `envs/aws-existing-vpc`, swap `module "cluster"` to source `../../modules/cluster/existing`, drop the `node_pool` module entirely if the customer's existing node groups are already sized/managed, and skip straight to `k8s_platform`.
 
@@ -40,7 +42,23 @@ terraform plan   # will fail without real AWS credentials configured, but a
 - **IRSA module is generic and reused twice**: once internally for cluster-autoscaler's own AWS permissions, and it's the same module a deployer would use to grant the *workload itself* AWS permissions if the image ever needs them (wire the resulting `role_arn` into the Helm chart's `serviceAccount.annotations."eks.amazonaws.com/role-arn"`, exactly like `values-aws.yaml` expects).
 - **Karpenter, canary rollout, and Azure**: Azure and canary rollout remain out of scope for this pass. **Karpenter is now implemented** — see below.
 
+## GCP (GKE)
+
+`envs/gcp-fresh` mirrors `envs/aws-fresh`'s composition pattern (network → cluster → node pool → workload identity → platform addons), but several things are genuinely different on GCP rather than forced into an artificial AWS-shaped mold:
+
+- **Network module output contract is intentionally NOT identical to AWS's.** `modules/network/gcp` outputs `network_self_link`/`subnetwork_self_link`/`pods_range_name`/`services_range_name` rather than `vpc_id`/`public_subnet_ids`/`private_subnet_ids` — GCP's VPC-native GKE model is one regional subnet plus two named secondary IP ranges (pods, services), not per-AZ public/private subnet pairs. Reusing the AWS names here would have hidden a real structural difference rather than represented it.
+- **No separate OIDC-provider-registration step.** AWS's IRSA needs an explicit `aws_iam_openid_connect_provider` resource before any ServiceAccount can assume a role. GKE's Workload Identity pool (`<project_id>.svc.id.goog`) is a fixed, always-present per-project resource — `modules/workload-identity` (the GCP equivalent of `modules/irsa`) is correspondingly simpler: one GSA, project IAM role grants, and a single `google_service_account_iam_member` binding. No cluster module needs to create/expose an OIDC provider ARN the way `modules/cluster/aws-eks` does.
+- **Node-pool autoscaling is native, not a separate controller.** `modules/node-pool/gcp-gke`'s `autoscaling { min_node_count, max_node_count }` block *is* the autoscaler — there's no GCP equivalent of installing cluster-autoscaler as a workload. `modules/k8s-platform` (shared, cloud-agnostic) is called with `install_cluster_autoscaler = false` in `envs/gcp-fresh/main.tf` for exactly this reason; ingress-nginx and metrics-server still get installed the same way on both clouds.
+- **Bottlerocket has no GCP equivalent.** It's an AWS-specific AMI project. `modules/node-pool/gcp-gke`'s `image_type` is `COS_CONTAINERD` (Google's Container-Optimized OS — the closer analogue in spirit: minimal, purpose-built, container-focused) or `UBUNTU_CONTAINERD`. Don't read the Bottlerocket toggle on the AWS side as something with a GCP parallel.
+- **Cluster module creates a private, VPC-native, Workload-Identity-enabled regional cluster** with a throwaway default node pool immediately removed (`remove_default_node_pool = true`) — the standard Terraform+GKE pattern to keep all real node pool state in `modules/node-pool/gcp-gke` instead of fighting the cluster resource over it, mirroring why the AWS node pool is a separate module from the EKS cluster module.
+- **Provider auth uses `google_client_config`'s access token**, refreshed on every plan/apply, rather than an exec plugin — GCP's ecosystem doesn't have as clean a `aws eks get-token`-style plugin in common use for this, so the token-data-source pattern is the standard approach instead.
+
+**Not yet done, consistent with the AWS side's gaps:**
+- `modules/cluster/gcp-gke-existing` and `modules/network/gcp-existing` are real code (data lookups + the same fail-fast tag/range validation approach as the AWS BYO-VPC module), but no composed `envs/gcp-existing-*` example exists yet — same status as `modules/cluster/existing` on the AWS side.
+- No live GCP deployment was performed — same no-live-cloud-testing constraint as everything else in this tree. Validated the same way: brace-balance check across every file, plus manual cross-reference of every module output against every place it's consumed. Run a real `terraform init && validate` (and ideally `plan` against a real GCP project) before trusting this further.
+
 ## Bottlerocket
+
 
 Drop-in change on the default managed-node-group path — set `node_ami_type = "BOTTLEROCKET_x86_64"` (or `_ARM_64` / `_x86_64_NVIDIA`) in `envs/aws-fresh/terraform.tfvars`. EKS handles Bottlerocket bootstrap for managed node groups automatically, so nothing else changes. Two operational notes:
 - No shell/SSH on Bottlerocket — use the built-in admin/control container or SSM (SSM policy is attached, but the SSM agent only runs if the admin container is explicitly enabled — plain Bottlerocket nodes don't have it by default).

@@ -49,6 +49,13 @@ resource "helm_release" "cluster_autoscaler" {
   namespace  = "kube-system"
   version    = "9.43.2"
 
+  lifecycle {
+    precondition {
+      condition     = var.cluster_autoscaler_role_arn != ""
+      error_message = "install_cluster_autoscaler is true but cluster_autoscaler_role_arn is empty — pass the IRSA role ARN."
+    }
+  }
+
   set = [
     {
       name  = "autoDiscovery.clusterName"
