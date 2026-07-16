@@ -13,6 +13,11 @@ Being explicit about this rather than quietly shipping only the two envs and cal
 
 ## Validation performed
 
+**Migrated to Helm provider v3.** HashiCorp's v3 restructured `provider "helm" { kubernetes { ... } }` from a block into a nested object (`kubernetes = { ... }`, including its `exec` sub-config), and did the same to `set`/`set_list`/`set_sensitive` inside `helm_release` (now `set = [ { name = ..., value = ... }, ... ]` instead of repeated `set { }` blocks). All four `versions.tf`/`providers.tf` files now pin `hashicorp/helm` to `>= 3.0.0, < 4.0.0`, and every `helm_release` in `modules/k8s-platform` and `modules/node-pool/karpenter` was converted to the new syntax.
+
+One thing I couldn't verify without a real provider install: the `exec` sub-attribute's conversion from block to nested object is inferred by analogy with the documented `kubernetes`/`registry`/`experiments` changes (HashiCorp's upgrade guide doesn't show an `exec` example explicitly). Worth confirming with `terraform validate` before trusting it fully — if `exec` turns out to still expect block syntax, that's a one-line fix (`exec { ... }` instead of `exec = { ... }`) in `envs/aws-fresh/providers.tf` and `envs/aws-existing-vpc/providers.tf`.
+
+
 **No `terraform apply` was run against a real AWS account** (per the "no live cloud testing required" note). Validation in this environment was:
 - Every `.tf` file's braces checked for balance (catches unclosed blocks).
 - Every module's declared outputs cross-referenced against every `module.x.y` reference in the env root modules, by hand, to catch typos that would otherwise only surface at `terraform plan` time.

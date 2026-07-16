@@ -62,6 +62,7 @@ module "irsa" {
   namespace             = "kube-system"
   service_account_name  = "karpenter"
   policy_json           = data.aws_iam_policy_document.karpenter_controller.json
+  attach_inline_policy  = true
   tags                  = var.tags
 }
 

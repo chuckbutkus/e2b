@@ -27,17 +27,18 @@ resource "helm_release" "ingress_nginx" {
   create_namespace = true
   version          = "4.11.3"
 
-  set {
-    name  = "controller.service.type"
-    value = "LoadBalancer"
-  }
-
   # NLB rather than the legacy Classic LB — matters for target-type=ip
   # compatibility with EKS's VPC CNI pod networking.
-  set {
-    name  = "controller.service.annotations.service\\.beta\\.kubernetes\\.io/aws-load-balancer-type"
-    value = "nlb"
-  }
+  set = [
+    {
+      name  = "controller.service.type"
+      value = "LoadBalancer"
+    },
+    {
+      name  = "controller.service.annotations.service\\.beta\\.kubernetes\\.io/aws-load-balancer-type"
+      value = "nlb"
+    },
+  ]
 }
 
 resource "helm_release" "cluster_autoscaler" {
@@ -48,18 +49,18 @@ resource "helm_release" "cluster_autoscaler" {
   namespace  = "kube-system"
   version    = "9.43.2"
 
-  set {
-    name  = "autoDiscovery.clusterName"
-    value = var.cluster_name
-  }
-
-  set {
-    name  = "awsRegion"
-    value = var.region
-  }
-
-  set {
-    name  = "rbac.serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
-    value = var.cluster_autoscaler_role_arn
-  }
+  set = [
+    {
+      name  = "autoDiscovery.clusterName"
+      value = var.cluster_name
+    },
+    {
+      name  = "awsRegion"
+      value = var.region
+    },
+    {
+      name  = "rbac.serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
+      value = var.cluster_autoscaler_role_arn
+    },
+  ]
 }

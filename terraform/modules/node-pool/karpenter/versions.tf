@@ -6,7 +6,7 @@ terraform {
     }
     helm = {
       source  = "hashicorp/helm"
-      version = ">= 2.12"
+      version = ">= 3.0.0, < 4.0.0"
     }
     kubectl = {
       # gavinbunney/kubectl, not the official kubernetes provider's

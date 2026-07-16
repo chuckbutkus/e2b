@@ -7,36 +7,34 @@ resource "helm_release" "karpenter" {
   create_namespace = false
   wait             = true
 
-  set {
-    name  = "settings.clusterName"
-    value = var.cluster_name
-  }
-
-  set {
-    name  = "settings.clusterEndpoint"
-    value = var.cluster_endpoint
-  }
-
-  set {
-    name  = "settings.interruptionQueue"
-    value = aws_sqs_queue.karpenter_interruption.name
-  }
-
-  set {
-    name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
-    value = module.irsa.role_arn
-  }
-
   # Karpenter's own pods must run on the small "system" node group (or
   # Fargate), never on nodes Karpenter itself provisions — otherwise a
   # scale-to-zero decision could evict the controller that's supposed to
   # notice and reverse it. Pin it with an anti-affinity-style node
   # selector against the system node group's label instead of leaving it
   # schedulable anywhere.
-  set {
-    name  = "nodeSelector.karpenter\\.sh/controller"
-    value = "true"
-  }
+  set = [
+    {
+      name  = "settings.clusterName"
+      value = var.cluster_name
+    },
+    {
+      name  = "settings.clusterEndpoint"
+      value = var.cluster_endpoint
+    },
+    {
+      name  = "settings.interruptionQueue"
+      value = aws_sqs_queue.karpenter_interruption.name
+    },
+    {
+      name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
+      value = module.irsa.role_arn
+    },
+    {
+      name  = "nodeSelector.karpenter\\.sh/controller"
+      value = "true"
+    },
+  ]
 }
 
 # --- EC2NodeClass: the "how" (AMI family, IAM, network, disk) --------------

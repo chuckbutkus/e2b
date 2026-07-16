@@ -40,6 +40,7 @@ module "cluster_autoscaler_irsa" {
   namespace             = "kube-system"
   service_account_name  = "cluster-autoscaler"
   policy_json           = data.aws_iam_policy_document.cluster_autoscaler.json
+  attach_inline_policy  = true
   tags                  = var.tags
 }
 

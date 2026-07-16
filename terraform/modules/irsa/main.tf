@@ -35,6 +35,22 @@ variable "policy_json" {
   default     = null
 }
 
+variable "attach_inline_policy" {
+  description = <<-EOT
+    Whether to attach policy_json as an inline policy. Deliberately a
+    separate boolean rather than inferring from `policy_json != null` —
+    when policy_json is built from an aws_iam_policy_document that
+    references ARNs of resources created in this same apply (e.g. a role
+    or queue that doesn't exist yet), the resulting .json value is
+    "known after apply," and Terraform can't evaluate a `count` based on
+    an unknown value even to just check non-nullness. This plain boolean
+    is always known at plan time regardless of what policy_json resolves
+    to, so it doesn't hit that error.
+  EOT
+  type        = bool
+  default     = false
+}
+
 variable "tags" {
   type    = map(string)
   default = {}
@@ -76,10 +92,17 @@ resource "aws_iam_role_policy_attachment" "managed" {
 }
 
 resource "aws_iam_role_policy" "inline" {
-  count  = var.policy_json != null ? 1 : 0
+  count  = var.attach_inline_policy ? 1 : 0
   name   = "${var.role_name}-inline"
   role   = aws_iam_role.this.id
   policy = var.policy_json
+
+  lifecycle {
+    precondition {
+      condition     = var.policy_json != null
+      error_message = "attach_inline_policy is true but policy_json is null — pass a policy document, or set attach_inline_policy = false."
+    }
+  }
 }
 
 output "role_arn" {
