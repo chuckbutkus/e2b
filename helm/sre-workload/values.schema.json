@@ -37,6 +37,14 @@
         "maxReplicas": { "type": "integer", "minimum": 1 }
       }
     },
+    "serviceAccount": {
+      "type": "object",
+      "properties": {
+        "create": { "type": "boolean" },
+        "name": { "type": "string" },
+        "automountToken": { "type": "boolean" }
+      }
+    },
     "ingress": {
       "type": "object",
       "properties": {

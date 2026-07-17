@@ -14,17 +14,13 @@ terraform {
       source  = "hashicorp/helm"
       version = ">= 3.0.0, < 4.0.0"
     }
-    kubectl = {
-      source  = "gavinbunney/kubectl"
-      version = ">= 1.14"
-    }
     tls = {
       source  = "hashicorp/tls"
       version = ">= 4.0"
     }
   }
 
-  # Configured via `terraform init -backend-config=../../backend-config/aws-fresh.hcl`
+  # Configured via `terraform init -backend-config=../../backend-config/aws-existing-cluster.hcl`
   # so this root module stays reusable across customer AWS accounts
   # without a hardcoded bucket name.
   backend "s3" {}
@@ -43,8 +39,8 @@ provider "kubernetes" {
 
   exec {
     api_version = "client.authentication.k8s.io/v1beta1"
-    command      = "aws"
-    args         = ["eks", "get-token", "--cluster-name", module.cluster.cluster_name, "--region", var.region]
+    command     = "aws"
+    args        = ["eks", "get-token", "--cluster-name", module.cluster.cluster_name, "--region", var.region]
   }
 }
 
@@ -58,20 +54,5 @@ provider "helm" {
       command     = "aws"
       args        = ["eks", "get-token", "--cluster-name", module.cluster.cluster_name, "--region", var.region]
     }
-  }
-}
-
-# Only exercised when enable_karpenter=true (see modules/node-pool/karpenter)
-# — always declared regardless, since Terraform provider blocks can't be
-# conditional, but it does nothing if no kubectl_manifest resource exists.
-provider "kubectl" {
-  host                   = module.cluster.cluster_endpoint
-  cluster_ca_certificate = base64decode(module.cluster.cluster_ca_certificate)
-  load_config_file       = false
-
-  exec {
-    api_version = "client.authentication.k8s.io/v1beta1"
-    command      = "aws"
-    args         = ["eks", "get-token", "--cluster-name", module.cluster.cluster_name, "--region", var.region]
   }
 }

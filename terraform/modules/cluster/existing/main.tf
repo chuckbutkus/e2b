@@ -1,8 +1,3 @@
-variable "cluster_name" {
-  description = "Name of the customer's existing EKS cluster."
-  type        = string
-}
-
 data "aws_eks_cluster" "this" {
   name = var.cluster_name
 }

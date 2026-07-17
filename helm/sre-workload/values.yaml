@@ -97,6 +97,11 @@ serviceAccount:
   create: true
   name: ""
   annotations: {} # populated per-cloud (IRSA role ARN / GCP SA email)
+  # Opt-in: set true only if the workload itself needs to call the
+  # Kubernetes API. IRSA (AWS) and Workload Identity (GCP) inject their
+  # own projected tokens via the pod-identity webhook and the GKE metadata
+  # server respectively — neither requires the default SA token mount.
+  automountToken: false
 
 podSecurityContext:
   runAsNonRoot: true

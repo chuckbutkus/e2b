@@ -16,11 +16,10 @@ terraform {
     }
   }
 
-  # backend "gcs" {} configured via
-  # `terraform init -backend-config=../../backend-config/gcp-fresh.hcl`,
-  # same reasoning as the AWS envs' S3 backend — kept out of the root
-  # module so it stays reusable across customer GCP projects.
-  #backend "gcs" {}
+  # Configured via `terraform init -backend-config=../../backend-config/gcp-fresh.hcl`
+  # so this root module stays reusable across customer GCP projects
+  # without a hardcoded bucket name.
+  backend "gcs" {}
 }
 
 provider "google" {
