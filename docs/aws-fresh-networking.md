@@ -632,3 +632,381 @@ The `node_role_arn` output is used by the Karpenter module to verify that the tw
 | `min_size = 1` | During node replacement or AZ failure, the single remaining node may not have enough capacity for the workload's PDB to be satisfied; rolling update can cause an outage |
 | `ignore_changes` on `desired_size` removed | Every `terraform apply` resets node count to `var.desired_size`, fighting the cluster autoscaler and causing disruptive node churn |
 | Nodes in public subnets | Worker nodes get public IPs and are directly reachable from the internet; each node's ports become an external attack surface |
+
+---
+
+## 4. Cluster Autoscaler IRSA (`modules/irsa`)
+
+**Source**: `terraform/modules/irsa`  
+**Receives from cluster module**: `oidc_provider_arn`, `cluster_oidc_issuer_url`
+
+`modules/irsa` is a reusable pattern — it creates exactly one IAM role with an OIDC-federated trust policy scoped to one Kubernetes ServiceAccount. In `aws-fresh`, the env instantiates it once for the cluster-autoscaler (and provides a commented-out second instantiation for the workload itself if it ever needs AWS API access). The cluster-autoscaler is the only component in this stack whose AWS API calls go through a pod-level IAM role rather than a node-level one.
+
+### Resource inventory
+
+| Resource type | Count | Name (default) |
+|---|---|---|
+| `aws_iam_role` | 1 | `e2b-sre-fresh-cluster-autoscaler` |
+| `aws_iam_role_policy` (inline) | 1 | `e2b-sre-fresh-cluster-autoscaler-inline` |
+
+`aws_iam_role_policy_attachment.managed` is not created — the cluster-autoscaler policy has no equivalent AWS managed policy, so the inline policy path is used. The `attach_inline_policy = true` flag and the policy document from `data.aws_iam_policy_document.cluster_autoscaler` in the env are what produce the inline policy resource.
+
+### Resources in detail
+
+#### IRSA Role (`aws_iam_role.this`)
+
+```
+name:   e2b-sre-fresh-cluster-autoscaler
+trust:  sts:AssumeRoleWithWebIdentity
+        Federated: <oidc_provider_arn>
+        Conditions:
+          <oidc_issuer_host>:sub = system:serviceaccount:kube-system:cluster-autoscaler
+          <oidc_issuer_host>:aud = sts.amazonaws.com
+```
+
+The trust policy is the heart of IRSA. It allows one specific action (`AssumeRoleWithWebIdentity`) by one specific federated principal (the OIDC provider registered in section 2), subject to two `StringEquals` conditions that together pin the role to exactly one Kubernetes ServiceAccount:
+
+The `:sub` condition matches the `sub` claim in the JWT that the EKS pod identity webhook injects into pods. The claim value is always `system:serviceaccount:<namespace>:<service-account-name>`. Here it resolves to `system:serviceaccount:kube-system:cluster-autoscaler`. Any other ServiceAccount presenting a token from this cluster — including the workload's own ServiceAccount — fails the condition and is denied.
+
+The `:aud` condition matches the `aud` (audience) claim, which the webhook sets to `sts.amazonaws.com`. This prevents tokens issued for other purposes (e.g., a different OIDC client) from being used for role assumption.
+
+The `local.oidc_issuer_host` computed in the module strips the `https://` prefix from the issuer URL. AWS's OIDC federation uses the bare hostname as the condition key prefix, not the full URL.
+
+**Why this pattern matters for least-privilege.** The node role (section 3) carries broad permissions needed for all node operations. Under the old approach, any process on a node could call IMDS and obtain the node's IAM credentials — including application pods before IRSA existed, or if a pod escapes containment. With IRSA, the workload's pods (and the cluster-autoscaler) present projected service account tokens directly to STS and receive credentials scoped only to their assigned role. The node's IAM credentials never need to include any application or infrastructure-tool permissions.
+
+**The `attach_inline_policy` boolean.** Terraform cannot evaluate a `count = var.policy_json != null ? 1 : 0` expression when `policy_json` is "known only after apply" — which happens when the policy document references ARNs of resources that don't exist yet (common when the policy and the resources it references are created in the same apply). A plain boolean is always known at plan time regardless of what `policy_json` resolves to, so `attach_inline_policy` exists as an explicit flag rather than being inferred from `policy_json`'s nullness. A `precondition` on the inline policy resource catches the mistake of setting `attach_inline_policy = true` without providing a `policy_json`.
+
+#### Inline Policy (`aws_iam_role_policy.inline`)
+
+```
+name:   e2b-sre-fresh-cluster-autoscaler-inline
+```
+
+The cluster-autoscaler needs read access to the Auto Scaling Groups that back the managed node group, and write access to adjust their desired capacity. The policy grants:
+
+| Permission | Purpose |
+|---|---|
+| `autoscaling:DescribeAutoScalingGroups` | Discover which ASGs exist and their current size bounds |
+| `autoscaling:DescribeAutoScalingInstances` | Know which instances are running in each group and their health |
+| `autoscaling:DescribeLaunchConfigurations` | Inspect the instance type and resource capacity of each group |
+| `autoscaling:DescribeTags` | Find ASGs tagged with `k8s.io/cluster-autoscaler/<cluster-name>` — this is how auto-discovery locates the right groups |
+| `autoscaling:SetDesiredCapacity` | The actual scale-out call: raise the ASG's desired count when pods are unschedulable |
+| `autoscaling:TerminateInstanceInAutoScalingGroup` | Scale in: remove a specific instance and decrement the ASG count |
+| `ec2:DescribeInstanceTypes` | Determine the CPU and memory capacity of each instance type in the group |
+| `ec2:DescribeLaunchTemplateVersions` | Resolve the current launch template version to confirm instance sizing |
+
+All actions are on `resources = ["*"]` because the autoscaler operates account-wide (it must be able to describe all ASGs to find the ones it manages) and there is no more granular resource type that would narrow the scope without breaking auto-discovery. Scoping to specific ASG ARNs would require knowing them before the cluster is created — a bootstrapping problem.
+
+### Module outputs
+
+```hcl
+role_arn  →  module.k8s_platform (cluster_autoscaler_role_arn)
+             The Helm chart wires this onto the cluster-autoscaler ServiceAccount
+             annotation so the pod receives IRSA credentials when it starts.
+```
+
+The IRSA pattern closes the loop: this module creates the IAM role, and the next module (k8s-platform) passes the role's ARN to the cluster-autoscaler Helm chart, which sets it as an annotation on the ServiceAccount. When the cluster-autoscaler pod starts, the EKS pod identity webhook reads the annotation, injects the JWT volume and environment variables, and the pod's AWS SDK exchanges the JWT for short-lived credentials for this role automatically.
+
+### What happens if this module is misconfigured
+
+| Misconfiguration | Failure mode |
+|---|---|
+| `:sub` condition points to wrong namespace or SA name | cluster-autoscaler pod gets `AccessDenied` on every AWS API call; nodes are never scaled |
+| OIDC provider ARN from a different cluster | `InvalidIdentityToken`; the JWT's issuer doesn't match the trusted provider |
+| Missing `SetDesiredCapacity` | Autoscaler can detect that scale-out is needed but cannot execute it; pods stay `Pending` indefinitely |
+| Missing `DescribeTags` | Auto-discovery finds no node groups; autoscaler starts but does nothing |
+| `attach_inline_policy = true` with `policy_json = null` | Terraform `precondition` fails at plan time with a clear error |
+
+---
+
+## 5. Kubernetes Platform Addons (`modules/k8s-platform`)
+
+**Source**: `terraform/modules/k8s-platform`  
+**Receives from cluster module**: `cluster_name`  
+**Receives from irsa module**: `cluster_autoscaler_role_arn`  
+**Depends on**: node pool (nodes must be Ready before Helm can schedule pods)
+
+This module installs three Helm charts that the workload and the cluster itself depend on. They are cluster-scoped infrastructure — shared across all workloads, requiring cloud IAM in one case — so they belong here in Terraform rather than in the workload's own Helm chart.
+
+In `aws-fresh`, the env calls this module with `depends_on = [module.node_pool]`. That dependency is non-obvious but critical: Helm applies Kubernetes resources, and Kubernetes schedules pods onto nodes. If `k8s_platform` runs before any node is Ready, every Helm chart installation fails immediately because there is nowhere to schedule the pods the charts create.
+
+### Resource inventory
+
+All three resources are `helm_release`. None creates AWS resources directly; instead they install Kubernetes controllers that themselves make AWS API calls (for ingress-nginx via the cluster role from section 2, and for cluster-autoscaler via the IRSA role from section 4).
+
+| Resource | Chart | Version | Namespace | Opt-out variable |
+|---|---|---|---|---|
+| `helm_release.metrics_server` | `metrics-server` | 3.12.2 | `kube-system` | `install_metrics_server` |
+| `helm_release.ingress_nginx` | `ingress-nginx` | 4.11.3 | `ingress-nginx` | `install_ingress_nginx` |
+| `helm_release.cluster_autoscaler` | `cluster-autoscaler` | 9.43.2 | `kube-system` | `install_cluster_autoscaler` |
+
+### Resources in detail
+
+#### metrics-server (`helm_release.metrics_server`)
+
+```
+chart:      metrics-server  3.12.2
+namespace:  kube-system
+```
+
+The Kubernetes HPA controller queries the Metrics API to decide whether to scale a deployment. The Metrics API is served by metrics-server, which scrapes CPU and memory usage from each node's kubelet and aggregates it. Without metrics-server, the HPA controller has no data source and reports `<unknown>` for all targets — no autoscaling occurs, regardless of how the HPA is configured.
+
+`--kubelet-insecure-tls` is deliberately **not** set. That flag disables TLS verification when metrics-server contacts each node's kubelet serving endpoint. It is needed in local development clusters (kind, minikube) where kubelets use self-signed certificates. EKS nodes have properly CA-signed kubelet serving certificates — TLS verification works correctly and disabling it would reduce security unnecessarily.
+
+#### ingress-nginx (`helm_release.ingress_nginx`)
+
+```
+chart:          ingress-nginx  4.11.3
+namespace:      ingress-nginx  (created by create_namespace = true)
+service.type:   LoadBalancer
+aws-load-balancer-type annotation:  nlb
+```
+
+ingress-nginx is the in-cluster component that receives HTTP/S traffic from the cloud load balancer and routes it to the correct Service based on the rules defined in Ingress objects. It is the implementation behind `ingressClassName: nginx` in the workload's Helm chart.
+
+`create_namespace = true` creates the `ingress-nginx` namespace during the Helm install. Without it, the install fails if the namespace doesn't already exist.
+
+**`service.type = LoadBalancer`.** When ingress-nginx creates a Service of type LoadBalancer, the Kubernetes cloud controller on EKS (backed by the cluster role's `elasticloadbalancing:*` permissions from section 2) provisions a real AWS load balancer and attaches it to the nodes. The load balancer's DNS name becomes the entry point for all external traffic.
+
+**`aws-load-balancer-type: nlb`.** This annotation requests an Network Load Balancer rather than the legacy Classic Load Balancer. NLB is the correct choice for EKS with VPC-native pod networking for two reasons:
+
+First, NLB supports `target-type: ip`, which routes traffic directly to pod IPs rather than to node IP + NodePort. Because VPC CNI gives pods real VPC addresses, the load balancer can route to them without an additional hop through the node. The classic ELB only supports instance mode (traffic arrives at the node on a NodePort, then kube-proxy forwards it to the pod), which adds latency and is less efficient.
+
+Second, NLB preserves the client's source IP address end-to-end. Classic ELB replaces the source IP with its own address, which breaks any application logic that needs to log or rate-limit by client IP.
+
+#### cluster-autoscaler (`helm_release.cluster_autoscaler`)
+
+```
+chart:      cluster-autoscaler  9.43.2
+namespace:  kube-system
+installed:  only when install_cluster_autoscaler = true
+            (= !var.enable_karpenter in aws-fresh)
+```
+
+The cluster-autoscaler watches for pods that cannot be scheduled due to insufficient node capacity. When it finds them, it calls `autoscaling:SetDesiredCapacity` (via the IRSA role from section 4) to add a node to the managed node group. When nodes are consistently underutilized, it calls `autoscaling:TerminateInstanceInAutoScalingGroup` to scale in.
+
+**Mutual exclusion with Karpenter.** When `enable_karpenter = true`, this chart is not installed (`install_cluster_autoscaler = !var.enable_karpenter`). Running both simultaneously on the same node group would cause them to fight: the autoscaler raises desired capacity, Karpenter considers the same node underutilized and consolidates it, the autoscaler raises again, and so on. The `precondition` on this resource guards against a misconfiguration where `install_cluster_autoscaler = true` is passed but `cluster_autoscaler_role_arn` is empty — that combination would produce a chart that starts but immediately fails all AWS API calls.
+
+**Auto-discovery configuration.** The chart is told the cluster name via `autoDiscovery.clusterName`. At runtime, the autoscaler searches for Auto Scaling Groups tagged with both `k8s.io/cluster-autoscaler/<cluster-name> = owned` and `k8s.io/cluster-autoscaler/enabled = true`. EKS adds these tags automatically to ASGs backing managed node groups. The `DescribeTags` permission in the IRSA policy (section 4) is what allows the autoscaler to find them.
+
+**IRSA wiring.** The `rbac.serviceAccount.annotations` value injects the IRSA role ARN as an annotation on the `cluster-autoscaler` ServiceAccount in `kube-system`. The EKS pod identity webhook reads this annotation when the autoscaler pod starts and injects the projected service account token and `AWS_ROLE_ARN` / `AWS_WEB_IDENTITY_TOKEN_FILE` environment variables, completing the IRSA chain from section 4.
+
+### What happens if this module is misconfigured
+
+| Misconfiguration | Failure mode |
+|---|---|
+| Module applied before node pool is Ready | All three Helm installs fail; pods cannot be scheduled; Terraform exits with a Helm timeout error |
+| metrics-server not installed | HPA reports `<unknown>` targets; no pod autoscaling occurs |
+| `--kubelet-insecure-tls` added on EKS | Unnecessary; suppresses a real TLS error if the kubelet cert has been tampered with |
+| `aws-load-balancer-type: nlb` annotation missing | Classic Load Balancer provisioned instead; `target-type: ip` mode unavailable; higher latency; source IP not preserved |
+| `create_namespace = false` for ingress-nginx | Install fails if the `ingress-nginx` namespace does not already exist |
+| cluster-autoscaler installed alongside Karpenter | Both controllers issue conflicting scale-out and scale-in calls; node count thrashes; cost spikes |
+| `cluster_autoscaler_role_arn` empty when installing autoscaler | `precondition` fails at plan time with a clear message; if bypassed, the autoscaler pod starts but gets `AccessDenied` on every AWS call |
+
+---
+
+## 6. Karpenter (`modules/node-pool/karpenter`)
+
+**Source**: `terraform/modules/node-pool/karpenter`  
+**Receives from network module**: `vpc_id`, `private_subnet_ids`  
+**Receives from cluster module**: `cluster_name`, `cluster_endpoint`, `cluster_security_group_id`, `oidc_provider_arn`, `cluster_oidc_issuer_url`  
+**Opt-in**: only created when `enable_karpenter = true` (`count = var.enable_karpenter ? 1 : 0` in the env)  
+**Depends on**: k8s-platform (cluster-autoscaler decision must be settled before Karpenter installs)
+
+Karpenter is an alternative to the cluster-autoscaler. Where cluster-autoscaler works at the node group level — it adjusts an Auto Scaling Group's desired count and waits for EC2 to launch a pre-configured instance type — Karpenter selects the optimal instance type for each batch of unschedulable pods and calls `ec2:RunInstances` directly. This produces faster node provisioning (30–60 seconds vs 2–3 minutes), access to a much wider range of instance types, and native spot instance handling with graceful pre-emption.
+
+### Resource inventory
+
+The module creates resources across four files. The full inventory when enabled:
+
+| Resource type | Count | Name (default) |
+|---|---|---|
+| `aws_iam_role` (node) | 1 | `e2b-sre-fresh-karpenter-node` |
+| `aws_iam_role_policy_attachment` (node) | 4 | *(same 4 policies as managed node group)* |
+| `aws_iam_instance_profile` | 1 | `e2b-sre-fresh-karpenter-node` |
+| `aws_eks_access_entry` | 1 | *(maps karpenter-node role → EC2_LINUX type)* |
+| `aws_iam_role` (controller, via `module.irsa`) | 1 | `e2b-sre-fresh-karpenter-controller` |
+| `aws_iam_role_policy` (controller inline) | 1 | `e2b-sre-fresh-karpenter-controller-inline` |
+| `aws_sqs_queue` | 1 | `e2b-sre-fresh-karpenter-interruption` |
+| `aws_sqs_queue_policy` | 1 | *(allows EventBridge to send to the queue)* |
+| `aws_cloudwatch_event_rule` | 4 | `e2b-sre-fresh-karpenter-{spot_interruption, rebalance_recommendation, instance_state_change, scheduled_change}` |
+| `aws_cloudwatch_event_target` | 4 | *(one target per rule, all pointing at the SQS queue)* |
+| `helm_release` (Karpenter controller) | 1 | `karpenter` in `kube-system` |
+| `kubectl_manifest` (EC2NodeClass) | 1 | `default` |
+| `kubectl_manifest` (NodePool) | 1 | `default` |
+
+### Resources in detail
+
+#### Node IAM Role and Instance Profile (`aws_iam_role.karpenter_node`, `aws_iam_instance_profile.karpenter_node`)
+
+```
+role name:     e2b-sre-fresh-karpenter-node
+profile name:  e2b-sre-fresh-karpenter-node
+trust:         ec2.amazonaws.com  →  sts:AssumeRole
+policies:      AmazonEKSWorkerNodePolicy, AmazonEKS_CNI_Policy,
+               AmazonEC2ContainerRegistryReadOnly, AmazonSSMManagedInstanceCore
+```
+
+This role is the node identity for EC2 instances Karpenter launches. It carries the same four managed policies as the managed node group role in section 3 for the same reasons: kubelet registration, VPC CNI pod networking, ECR image pulls, and SSM debugging.
+
+The critical difference is the **instance profile**. Managed node groups handle instance profile attachment automatically — EKS attaches the profile when it creates the Auto Scaling Group. Karpenter bypasses the managed node group path entirely and calls `ec2:RunInstances` directly, which requires the caller to specify an instance profile by name at launch time. `aws_iam_instance_profile.karpenter_node` is the named wrapper around the role that the EC2NodeClass references in the `spec.role` field.
+
+#### Explicit Access Entry (`aws_eks_access_entry.karpenter_node`)
+
+```
+cluster_name:   e2b-sre-fresh
+principal_arn:  aws_iam_role.karpenter_node.arn
+type:           EC2_LINUX
+```
+
+Under API authentication mode, EKS automatically creates an Access Entry for the IAM role backing a **managed** node group. Karpenter-launched instances are not managed node group members — they are plain EC2 instances with an instance profile attached. EKS has no awareness of them, so no automatic Access Entry is created.
+
+Without this explicit entry, every instance Karpenter launches attempts to register with the API server, presents its node role credentials, and is rejected with an authorization error. The node appears in `kubectl get nodes` with status `NotReady` and never progresses. The `type = "EC2_LINUX"` selects the EKS-managed node bootstrapping policy (granting `system:nodes` and `system:bootstrappers` groups), which works for both AL2023 and Bottlerocket despite the name.
+
+#### Controller IRSA Role (`module.irsa` sub-module)
+
+```
+role name:            e2b-sre-fresh-karpenter-controller
+service account:      kube-system/karpenter
+trust (sub):          system:serviceaccount:kube-system:karpenter
+trust (aud):          sts.amazonaws.com
+inline policy:        see below
+```
+
+The Karpenter controller pod needs broad EC2 permissions to provision and manage nodes. Rather than giving these permissions to the node role (which would mean every node could provision other nodes), an IRSA role scoped to the `karpenter` ServiceAccount in `kube-system` carries them. The same `modules/irsa` pattern from section 4 is reused here as a nested module call.
+
+The inline policy is documented in the code as deliberately broad, matching AWS's own published Karpenter getting-started policy. The permissions group into five areas:
+
+**EC2 instance lifecycle.** `ec2:RunInstances`, `ec2:CreateTags`, `ec2:TerminateInstances` — Karpenter calls `RunInstances` directly (not through ASG) to provision nodes for pending pods, and `TerminateInstances` to remove them during consolidation. `CreateTags` is used to label the launched instances with the tags from `EC2NodeClass.spec.tags`.
+
+**Fleet and launch template management.** `ec2:CreateFleet`, `ec2:CreateLaunchTemplate`, `ec2:DeleteLaunchTemplate`, `ec2:DescribeLaunchTemplates` — Karpenter uses EC2 Fleet to efficiently launch multiple instances with price-capacity optimization across instance types and availability zones. It creates a short-lived launch template for each batch of launches and deletes it afterwards.
+
+**Discovery.** `ec2:DescribeInstances`, `ec2:DescribeInstanceTypes`, `ec2:DescribeInstanceTypeOfferings`, `ec2:DescribeAvailabilityZones`, `ec2:DescribeImages`, `ec2:DescribeSubnets`, `ec2:DescribeSecurityGroups`, `ec2:DescribeSpotPriceHistory` — Karpenter builds a real-time picture of available instance types, their capacity in each AZ, spot prices, and the network configuration it should use. This is what allows it to select the genuinely cheapest suitable instance type for each workload rather than being constrained to a pre-configured list.
+
+**Role passing.** `iam:PassRole` scoped to `aws_iam_role.karpenter_node.arn` only. When Karpenter calls `RunInstances`, it must specify the instance profile for the node. AWS requires the caller to have `iam:PassRole` on the role being assigned. Restricting this to the single node role ARN is the tightest scope possible for this permission.
+
+**Cluster and pricing lookups.** `eks:DescribeCluster` — Karpenter reads the cluster's Kubernetes version to select the correct AMI when `amiFamily` is set to auto-resolve. `pricing:GetProducts` and `ssm:GetParameter` — used to resolve the latest EKS-optimised AMI IDs from the AWS SSM Parameter Store (e.g., `/aws/service/eks/optimized-ami/1.31/amazon-linux-2023/...`) and to look up current spot pricing for cost-optimal instance selection.
+
+#### Karpenter Helm Release (`helm_release.karpenter`)
+
+```
+chart:      oci://public.ecr.aws/karpenter/karpenter  v1.1.1
+namespace:  kube-system
+wait:       true
+nodeSelector:  karpenter.sh/controller = true
+settings.interruptionQueue: e2b-sre-fresh-karpenter-interruption
+```
+
+The chart is distributed as an OCI artifact from ECR rather than a traditional Helm repository. OCI charts are referenced directly by registry URL and do not require a `helm repo add` step.
+
+`wait = true` is mandatory here. The chart installs the `EC2NodeClass` and `NodePool` CRD definitions, among other things. The subsequent `kubectl_manifest` resources that create instances of those CRDs (`kubectl_manifest.ec2_node_class`, `kubectl_manifest.node_pool`) cannot be applied until the CRDs exist in the cluster. `wait = true` makes Terraform block until all chart resources are Running and Ready before proceeding, so the CRDs are guaranteed to be registered before the manifests that use them are applied.
+
+`nodeSelector: karpenter.sh/controller = true` pins the Karpenter controller pod to the managed node group from section 3. This is the bootstrapping safety property described there: Karpenter cannot schedule pods onto nodes; it can only provision new nodes. If the controller ran on a Karpenter-provisioned node, a consolidation decision could remove that node — and a stopped Karpenter controller cannot provision a replacement for itself.
+
+`settings.interruptionQueue` tells the controller where to watch for EC2 lifecycle events. This connects the Helm release to the SQS infrastructure created in the interruption file.
+
+#### EC2NodeClass (`kubectl_manifest.ec2_node_class`)
+
+```
+apiVersion:  karpenter.k8s.aws/v1
+kind:         EC2NodeClass
+name:         default
+amiFamily:    Bottlerocket  (default; AL2023 via karpenter_ami_family variable)
+role:         e2b-sre-fresh-karpenter-node
+subnetSelectorTerms:   by explicit subnet ID  (3 private subnets)
+securityGroupSelectorTerms:  by cluster security group ID
+```
+
+EC2NodeClass is the AWS-specific half of Karpenter's two-CRD configuration model. It answers "how should the instance be configured" — AMI family, IAM role, networking, and disk layout.
+
+**Subnet selection by explicit ID.** Rather than using tag-based subnet discovery (`karpenter.sh/discovery: <cluster-name>` tags on subnets), the module uses explicit IDs from `var.private_subnet_ids`. This is more robust: Terraform already has the IDs as module outputs, and the configuration cannot drift if someone removes the discovery tag from a subnet. Tag-based discovery is the approach documented in Karpenter's getting-started guide because it is cloud-formation-friendly, but explicit IDs are preferable when Terraform owns the networking.
+
+**Security group selection by ID.** The cluster security group from `module.cluster.cluster_security_group_id` is the same group that EKS attaches to managed node group instances. Using the same group means Karpenter-launched nodes participate in the same VPC security model as managed group nodes — the control plane can reach them, and they can reach each other.
+
+**Bottlerocket block device mapping.** When `amiFamily = Bottlerocket`, the EC2NodeClass explicitly sizes the data volume at `/dev/xvdb` to 50 GiB gp3 encrypted, for the same reasons documented in section 3's launch template. Without this, Karpenter-launched Bottlerocket nodes use the AMI's default data volume size, which is too small for a production workload.
+
+**`depends_on = [helm_release.karpenter]`.** The EC2NodeClass CRD is installed by the Karpenter Helm chart. `kubectl_manifest` (the `gavinbunney/kubectl` provider) defers schema validation and handles this correctly: it applies the manifest after the depends_on target completes, without requiring the CRD to exist at plan time. The official `kubernetes_manifest` resource from the HashiCorp Kubernetes provider cannot be used here because it validates the CRD schema at plan time — which fails when the CRD doesn't yet exist in the cluster.
+
+#### NodePool (`kubectl_manifest.node_pool`)
+
+```
+apiVersion:  karpenter.sh/v1
+kind:         NodePool
+name:         default
+capacity-type:          [on-demand, spot]
+arch:                   amd64
+instance-category:      [c, m, r]
+instance-generation:    > 4
+limits.cpu:             1000
+consolidationPolicy:    WhenEmptyOrUnderutilized
+consolidateAfter:       30s
+```
+
+NodePool is the cluster-agnostic half of Karpenter's configuration. It answers "what kind of instance and when to act" — instance selection constraints, capacity limits, and disruption behaviour.
+
+**Requirements.** The `requirements` block constrains the set of instances Karpenter may choose:
+
+- `capacity-type: [on-demand, spot]`: Both types are enabled. Karpenter selects spot when it is significantly cheaper and falls back to on-demand when spot capacity is unavailable. The interruption queue (below) makes spot viable by ensuring graceful draining before reclaim.
+- `arch: amd64`: Only x86_64 instances. ARM instances (Graviton) would require recompiling the workload image for ARM, which has not been done.
+- `instance-category: [c, m, r]`: Compute-optimized, general-purpose, and memory-optimized families. Excludes storage-optimized (d, i), accelerated (p, g, inf), and HPC (hpc) families that are inappropriate for a web workload.
+- `instance-generation: Gt 4`: Fifth generation and newer (m5+, c5+, r5+). Older generations have slower processors, lower network throughput, and no Nitro system hypervisor improvements.
+
+**`limits.cpu: 1000`.** A hard ceiling on the total vCPU count across all nodes this NodePool provisions. With m6i.large instances (2 vCPU each), this caps the pool at 500 nodes. The limit exists as a safety rail: without it, a misconfigured workload with very high resource requests could trigger Karpenter to provision hundreds of nodes before anyone notices. Alerts on Karpenter's node count metric should accompany this limit in production.
+
+**Disruption.** `consolidationPolicy: WhenEmptyOrUnderutilized` instructs Karpenter to both remove completely empty nodes and reschedule pods to consolidate partially utilised nodes onto fewer instances. `consolidateAfter: 30s` adds a short delay before acting on a consolidation candidate — this prevents Karpenter from reacting to transient conditions (e.g., a pod that momentarily becomes reschedulable during a rolling update) and thrashing nodes unnecessarily.
+
+**`depends_on = [kubectl_manifest.ec2_node_class]`.** The NodePool references the EC2NodeClass by name in its `nodeClassRef`. The EC2NodeClass must exist before the NodePool is created, or the NodePool's admission webhook rejects it.
+
+#### Interruption Handling (`aws_sqs_queue`, `aws_cloudwatch_event_rule` ×4, `aws_cloudwatch_event_target` ×4)
+
+```
+queue:               e2b-sre-fresh-karpenter-interruption
+retention:           300 seconds
+encryption:          SQS-managed SSE
+event rules (×4):   spot_interruption, rebalance_recommendation,
+                     instance_state_change, scheduled_change
+```
+
+Spot instances are interrupted with approximately two minutes' notice before AWS reclaims them. Without interruption handling, that notice goes unheard: pods continue running on the node until the instance is forcibly terminated, at which point Kubernetes marks them as failed and reschedules them. The two-minute notice period is wasted, PodDisruptionBudgets are bypassed because the termination is not a cooperative drain, and the workload experiences an outage equal to the time between abrupt pod failure and the new pods reaching Ready.
+
+With interruption handling, Karpenter receives the warning event, begins draining the node (which respects PodDisruptionBudgets), and the replacement pods are scheduled and reach Ready before the instance is reclaimed. The two-minute window is used productively.
+
+Four EventBridge rules capture different stages of the instance lifecycle:
+
+| Event | Source | When it fires |
+|---|---|---|
+| Spot Instance Interruption Warning | `aws.ec2` | ~2 minutes before a spot instance is reclaimed |
+| Instance Rebalance Recommendation | `aws.ec2` | AWS signals that a spot instance is at elevated interruption risk; earlier than the interruption warning |
+| Instance State-change Notification | `aws.ec2` | Instance enters stopping, stopped, or terminated state |
+| AWS Health Event | `aws.health` | Scheduled maintenance or retirement that will take the instance offline |
+
+All four rules forward matching events to the same SQS queue. Karpenter polls the queue continuously and reacts to each event type. The rebalance recommendation in particular gives Karpenter the opportunity to migrate pods proactively — before the 2-minute interruption warning — when AWS signals elevated reclaim risk.
+
+`message_retention_seconds = 300`: Events older than 5 minutes are discarded. A 5-minute-old interruption warning means the instance was likely already terminated; acting on it would reference a node that no longer exists.
+
+`sqs_managed_sse_enabled = true`: SQS-managed encryption at rest, using the SQS service key. The messages contain only event metadata (instance ID, event type, timestamp) — not sensitive data — but encryption is applied as a baseline regardless.
+
+The queue policy grants `sqs:SendMessage` to `events.amazonaws.com` (EventBridge) and `sqs.amazonaws.com`. The second principal covers cross-account EventBridge delivery scenarios, where an event bus in another account sends to a queue in this one.
+
+### Module outputs
+
+```hcl
+karpenter_node_role_arn       → informational; the node role for Karpenter-provisioned instances
+karpenter_controller_role_arn → informational; the IRSA role for the Karpenter controller pod
+interruption_queue_name       → already wired into the Helm release; exposed in case
+                                 external monitoring wants to track queue depth
+```
+
+### What happens if this module is misconfigured
+
+| Misconfiguration | Failure mode |
+|---|---|
+| Instance profile not created | `RunInstances` call fails: "Invalid IAM Instance Profile"; no nodes are provisioned |
+| `aws_eks_access_entry` missing | Karpenter launches instances; nodes attempt to join; API server rejects them; nodes stay `NotReady` forever |
+| Controller IRSA missing `iam:PassRole` | `RunInstances` call fails: "not authorized to pass role"; Karpenter cannot launch any nodes |
+| Controller IRSA missing `ec2:DescribeSpotPriceHistory` | Spot instance selection fails; Karpenter falls back to on-demand only (silent degradation) |
+| `wait = false` on Helm release | EC2NodeClass and NodePool manifests applied before CRDs are registered; both `kubectl_manifest` resources fail |
+| `kubectl_manifest` replaced with `kubernetes_manifest` | Plan fails: "no matches for CRD" because the official provider validates at plan time before the chart has installed the CRDs |
+| Interruption queue not created | Spot nodes receive no warning before termination; pods experience abrupt failure; PDB guarantees bypassed |
+| `limits.cpu` not set | Karpenter has no ceiling on node count; a misbehaving HPA or resource request can trigger unbounded EC2 spend |
+| Karpenter and cluster-autoscaler both installed | Both controllers react to the same unschedulable pods; the autoscaler raises ASG desired count, Karpenter launches separate instances, the autoscaler's new nodes may be immediately consolidated by Karpenter; node churn and unpredictable costs |
