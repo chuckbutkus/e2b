@@ -461,3 +461,174 @@ The `cluster_endpoint` and `cluster_ca_certificate` outputs are what allow the k
 | `authentication_mode = "CONFIG_MAP"` | Chicken-and-egg: `aws-auth` ConfigMap can't be applied until cluster is reachable, cluster isn't useful until ConfigMap is applied; particularly bad with private-endpoint-only clusters |
 | OIDC provider not created | All `AssumeRoleWithWebIdentity` calls from pods fail with "No OpenIDConnect provider found"; cluster-autoscaler, Karpenter, and any IRSA-backed workload lose their AWS access |
 | CloudWatch log group not pre-created | Log delivery to CloudWatch silently fails for the first few minutes until EKS auto-creates the group (with no retention policy, leading to unbounded log accumulation) |
+
+---
+
+## 3. Node Pool (`modules/node-pool/aws-eks`)
+
+**Source**: `terraform/modules/node-pool/aws-eks`  
+**Receives from network module**: `private_subnet_ids`  
+**Receives from cluster module**: `cluster_name`
+
+This module creates the EC2 data plane — the worker nodes that run pods. The EKS control plane created by the previous module manages the cluster; this module provides the capacity the control plane schedules work onto. Without at least one node group, the cluster exists but has nowhere to run pods.
+
+The module always creates one managed node group. When Karpenter is enabled, this group shrinks to a small fixed-size pool that hosts only cluster infrastructure; Karpenter provisions separate nodes for workloads on demand. When Karpenter is disabled, this group scales to carry the full workload.
+
+### Resource inventory
+
+| Resource type | Count | Name (default) |
+|---|---|---|
+| `aws_launch_template` | 1 | `e2b-sre-fresh-` *(name_prefix, AWS appends a random suffix)* |
+| `aws_iam_role` | 1 | `e2b-sre-fresh-eks-node` |
+| `aws_iam_role_policy_attachment` | 4 | *(one per managed policy; see below)* |
+| `aws_eks_node_group` | 1 | `e2b-sre-fresh-default` |
+
+The module also uses `data.aws_partition.current` to construct partition-portable managed policy ARNs, and a local `is_bottlerocket` boolean that switches disk configuration between the two supported AMI families.
+
+### Resources in detail
+
+#### Launch Template (`aws_launch_template.this`)
+
+```
+name_prefix:   e2b-sre-fresh-
+volume (AL2023):       /dev/xvda  50 GiB  gp3  encrypted
+volume (Bottlerocket): /dev/xvdb  50 GiB  gp3  encrypted
+http_tokens:   required   (IMDSv2 only)
+http_put_response_hop_limit:  2
+```
+
+The launch template is the mechanism through which the managed node group applies configuration that EKS's node group resource does not directly expose. The node group references the template by ID and version, so the node group resource itself stays clean.
+
+**Disk configuration.**
+
+AL2023 uses a single root volume at `/dev/xvda`. Bottlerocket uses a two-partition layout: a read-only OS partition at `/dev/xvda` (managed by AWS and not configurable) and a separate data partition at `/dev/xvdb` where containerd, kubelet, and pod image layers live. The default size of the Bottlerocket data volume is small — not enough for a workload that pulls multiple container images — so the module sizes it explicitly to 50 GiB (configurable via `bottlerocket_data_volume_size_gb`).
+
+Both AMI families use `gp3` rather than `gp2`. The gp3 volume type delivers 3,000 IOPS and 125 MB/s throughput at baseline regardless of volume size, whereas gp2 baseline IOPS scales with size (3 IOPS/GiB, so a 50 GiB gp2 delivers only 150 IOPS). For a Kubernetes node pulling and layering container images, the difference in disk I/O throughput is directly visible in pod startup latency.
+
+`encrypted = true` applies the account's default KMS key to the volume. If a physical disk is decommissioned in an AWS data centre or an EBS snapshot is inadvertently shared, the data is unreadable without the key. This is defence in depth — the contents of a worker node disk (image layers, temporary files, potential log data) should not be recoverable outside AWS.
+
+`delete_on_termination = true` ensures EBS volumes are deleted when the node instance is terminated. Without it, every node replacement — whether from an autoscaler action, a rolling update, or a manual termination — would leave an orphaned encrypted volume accumulating storage charges indefinitely.
+
+**IMDSv2 enforcement.**
+
+The Instance Metadata Service (IMDS) is an HTTP endpoint at `169.254.169.254` that every EC2 instance can reach. It serves instance identity documents, IAM role credentials, user data, and other node-level information. IMDSv1 accepted unauthenticated GET requests — any process on the node could call it and retrieve the node's IAM credentials. This made SSRF (Server-Side Request Forgery) vulnerabilities on the instance particularly dangerous: a web application that could be tricked into making an outbound HTTP request could be used to steal the node's IAM credentials by fetching `http://169.254.169.254/latest/meta-data/iam/security-credentials/`.
+
+`http_tokens = "required"` disables IMDSv1 entirely. IMDSv2 requires a two-step process: the caller must first make an authenticated PUT request to obtain a session token, then present that token in subsequent GET requests. Ordinary SSRF attacks use GET requests and cannot complete the IMDSv2 handshake, so stolen instance credentials via SSRF are no longer possible.
+
+`http_put_response_hop_limit = 2` controls how many network hops the IMDSv2 PUT response can traverse before it is discarded. Each veth interface (the virtual Ethernet pair connecting a container to the host network) counts as one hop.
+
+- Hop limit 1: Only processes running directly on the EC2 host can complete the IMDSv2 handshake. Container processes — including DaemonSet pods — are blocked, because they sit one veth hop away from the host.
+- Hop limit 2: Processes on the host (hop 0) and processes in containers directly on the host (hop 1, i.e., DaemonSet pods such as the VPC CNI and kube-proxy) can reach IMDS. Containers nested within other containers cannot.
+
+Hop limit 2 is the correct setting for EKS because node-level DaemonSets (VPC CNI, kube-proxy, and the SSM agent on AL2023) need IMDS to function. The VPC CNI uses IMDS to discover the node's primary private IP and ENI information during pod network setup. Without it, pod IP assignment fails. Setting hop limit to 1 would block these DaemonSets. Setting it higher than 2 would unnecessarily expose IMDS to application containers, which should use IRSA tokens rather than node credentials for any AWS API access they need.
+
+#### Node IAM Role (`aws_iam_role.node`)
+
+```
+name:                  e2b-sre-fresh-eks-node
+assume_role_policy:    ec2.amazonaws.com  →  sts:AssumeRole
+```
+
+This is the EC2 instance profile role — the IAM identity that the node itself assumes when making AWS API calls. It is distinct from the pod-level roles created by the IRSA module: pods use their own projected service account tokens to assume workload-specific roles with scoped permissions, and never touch this node role. The node role covers only infrastructure-level node operations.
+
+The trust policy restricts assumption to `ec2.amazonaws.com`. When EKS launches an instance, it attaches this role as the instance profile, and the AWS SDK running on the node (in kubelet, the VPC CNI, and the SSM agent) retrieves short-lived credentials for it from IMDS.
+
+In API authentication mode — set by the cluster module — EKS automatically creates an Access Entry mapping this role's ARN to the `system:nodes` and `system:bootstrappers` Kubernetes RBAC groups. This is what allows nodes to register with the API server without any manual `aws-auth` ConfigMap editing. The Access Entry is created when the node group is created and deleted when the node group is deleted, entirely managed by EKS.
+
+#### Node Policy Attachments (`aws_iam_role_policy_attachment.node_policies`, ×4)
+
+Four managed policies are attached to the node role. Each covers a distinct area of node functionality:
+
+**`AmazonEKSWorkerNodePolicy`**
+
+Grants the permissions the kubelet needs to participate in the cluster: `ec2:DescribeInstances`, `ec2:DescribeRouteTables`, `ec2:DescribeSecurityGroups`, `ec2:DescribeSubnets`, and `ec2:DescribeVolumes` among others. The kubelet calls these APIs to discover the node's network topology, validate its placement, and self-report the node's capacity (CPU, memory, allocatable pods) to the API server. Without this policy, the kubelet can start but cannot successfully register the node.
+
+**`AmazonEKS_CNI_Policy`**
+
+Grants the VPC CNI DaemonSet permission to manage Elastic Network Interfaces on the node: `ec2:CreateNetworkInterface`, `ec2:AttachNetworkInterface`, `ec2:DetachNetworkInterface`, `ec2:DeleteNetworkInterface`, `ec2:AssignPrivateIpAddresses`, `ec2:UnassignPrivateIpAddresses`, and the describe variants of each.
+
+The VPC CNI implements Kubernetes pod networking by assigning secondary private IP addresses from the node's subnets directly to pods. Each pod gets a real VPC IP address — the same address block as the node — rather than an overlay network address. When a pod is created, the CNI requests an IP from one of the node's pre-warmed secondary ENIs. This is what makes pod-to-pod traffic within the VPC routable without NAT. Without this policy, the CNI cannot allocate pod IPs and pod creation stalls with a network setup error.
+
+**`AmazonEC2ContainerRegistryReadOnly`**
+
+Grants `ecr:GetAuthorizationToken`, `ecr:BatchGetImage`, `ecr:GetDownloadUrlForLayer`, and `ecr:BatchCheckLayerAvailability` on all ECR repositories in the account.
+
+The workload image (`ghcr.io/e2b-dev/sre-interview`) is pulled from the GitHub Container Registry, not ECR, so the workload itself does not need this policy. However, several EKS-managed add-ons are distributed through ECR — `kube-proxy`, `coredns`, and the VPC CNI itself use ECR images. When EKS upgrades these add-ons, the node must be able to pull from ECR. Without this policy, add-on upgrades silently fail with image pull errors.
+
+**`AmazonSSMManagedInstanceCore`**
+
+Grants the permissions the SSM agent needs to register the instance with Systems Manager and accept Session Manager connections: `ssm:UpdateInstanceInformation`, `ssmmessages:CreateControlChannel`, `ssmmessages:OpenControlChannel`, and related APIs.
+
+Session Manager is the mechanism for getting a shell onto a node without configuring SSH or a bastion host. On AL2023 nodes, the SSM agent is installed and running by default — the policy alone is sufficient to enable Session Manager access. On Bottlerocket nodes, the SSM agent is not running in the default configuration; it is available only when the Bottlerocket admin container is explicitly enabled via `EC2NodeClass.spec.userData` in Karpenter, or via the launch template user data for managed node groups.
+
+The practical value: when a pod is behaving unexpectedly at the kernel or OS level — a container escape attempt, an unexpected syscall pattern, unusually high disk or network I/O — Session Manager provides a way to inspect the host directly without pre-planned SSH configuration.
+
+#### Managed Node Group (`aws_eks_node_group.this`)
+
+```
+cluster_name:      e2b-sre-fresh
+node_group_name:   e2b-sre-fresh-default
+subnet_ids:        [3 private subnets]
+instance_types:    [m6i.large]
+capacity_type:     ON_DEMAND
+ami_type:          AL2023_x86_64_STANDARD
+min_size:          2
+max_size:          6
+desired_size:      3
+max_unavailable:   1  (during updates)
+```
+
+A managed node group is an AWS-managed Auto Scaling Group with EKS-specific integration. AWS handles node bootstrapping (registering the node with the cluster, installing kubelet, configuring networking), AMI patching, and rolling replacement during node group updates. The alternative — self-managed node groups — requires the operator to handle all of this.
+
+**Subnet placement.** The node group receives `module.network.private_subnet_ids` — the same three private subnets passed to the cluster module. EKS distributes new nodes across all provided subnets (and therefore across all AZs) using the Auto Scaling Group's `AZRebalance` process. With three subnets and `desired_size = 3`, each AZ gets one node in the steady state, satisfying the topology spread constraints (`topologySpreadConstraints`) configured in the Helm chart.
+
+**Instance type: `m6i.large`.** The m6i.large provides 2 vCPU and 8 GiB of memory. EKS limits the maximum number of pods per node based on the instance's ENI and secondary IP capacity: for m6i.large (3 ENIs, 10 secondary IPs each), the pod limit is `(3 × 10) − 3 + 2 = 29`. With the workload's resource requests of 100m CPU and 128Mi memory, a single m6i.large can theoretically host up to 16 replicas before memory is exhausted, well above the HPA maximum of 10. Instance type selection should be revisited if the workload's actual resource consumption (measured after deployment) differs significantly from the declared requests.
+
+**Capacity type: `ON_DEMAND`.** On-demand instances have no interruption risk — AWS does not reclaim them without notice. Spot instances are cheaper (typically 60–90% discount) but can be interrupted with two minutes' notice when EC2 capacity is reclaimed. The Karpenter module handles spot capacity with proper interruption handling (SQS queue + EventBridge rules); for the base managed node group, on-demand is the safe default.
+
+**Scaling configuration.** `min_size = 2` guarantees at least two nodes are always running, which matters for the PodDisruptionBudget on the workload: `minAvailable = 1` means one pod must always be running, and with two nodes, a rolling node replacement can always keep at least one pod running by first scheduling the replacement pod on the surviving node. Setting `min_size = 1` would make the workload momentarily unavailable during node replacement. `max_size = 6` caps autoscaler-driven scale-out; `desired_size = 3` is the initial target.
+
+**`update_config { max_unavailable = 1 }`.** When the node group is updated — typically for an AMI version upgrade — EKS drains and replaces nodes in sequence. `max_unavailable = 1` means only one node is cordoned and drained at a time. With a PodDisruptionBudget on the workload (`minAvailable = 1`) and `min_size = 2`, this ensures no workload downtime during rolling node replacement: pods evicted from the draining node reschedule onto the remaining nodes before the next node is touched.
+
+**`lifecycle { ignore_changes = [scaling_config[0].desired_size] }`.** Once cluster-autoscaler is running, it becomes the owner of the node group's desired capacity. Every scale-out or scale-in event it performs updates the Auto Scaling Group's desired count — a value Terraform also tracks. Without `ignore_changes`, the next `terraform apply` would detect a drift between `var.desired_size` (3) and the autoscaler's current value (say, 5 after a scale-out) and reset it to 3, undoing the autoscaler's work. `ignore_changes` tells Terraform to treat `desired_size` as externally managed after the initial creation.
+
+**Dual role when Karpenter is enabled.** When `var.enable_karpenter = true` in the environment, the node group is sized as a system pool rather than a workload pool:
+
+```hcl
+min_size     = 1   # system_node_min_size
+max_size     = 2   # system_node_max_size
+desired_size = 1   # system_node_desired_size
+labels       = { "karpenter.sh/controller" = "true" }
+```
+
+The Karpenter Helm release (in `modules/node-pool/karpenter`) configures a `nodeSelector` on its controller pod matching `karpenter.sh/controller = true`. This forces the Karpenter pod to land only on nodes in this managed group and never on nodes that Karpenter itself provisioned. The reason is a bootstrapping safety property: if the Karpenter controller runs on a Karpenter-provisioned node and that node is consolidated or interrupted, Karpenter cannot launch a replacement for itself — it is the thing that launches nodes. Running the controller on a stable, independently managed group breaks this circular dependency.
+
+**`depends_on = [aws_iam_role_policy_attachment.node_policies]`** ensures all four policy attachments have propagated through IAM before EKS validates the node role during node group creation. EKS checks the role's policies at creation time; a race condition here would produce an intermittent IAM validation error.
+
+### Module outputs
+
+```hcl
+node_group_arn    → informational; useful for IAM conditions scoped to this group
+node_role_arn     → modules/node-pool/karpenter (to distinguish the Karpenter node role
+                    from this managed-group role; both need separate Access Entries)
+node_group_status → informational; reflects ACTIVE / DEGRADED / UPDATING
+```
+
+The `node_role_arn` output is used by the Karpenter module to verify that the two node roles (managed node group vs. Karpenter-provisioned nodes) are distinct and that only the Karpenter-specific role has `aws_eks_access_entry` type `EC2_LINUX` created by Karpenter's module, while this module's role gets its Access Entry auto-created by EKS in API auth mode.
+
+### What happens if this module is misconfigured
+
+| Misconfiguration | Failure mode |
+|---|---|
+| Missing `AmazonEKSWorkerNodePolicy` | kubelet starts but cannot register the node; node stays `NotReady` indefinitely |
+| Missing `AmazonEKS_CNI_Policy` | VPC CNI cannot manage ENIs; pod IP assignment fails; pods stay in `ContainerCreating` |
+| Missing `AmazonEC2ContainerRegistryReadOnly` | EKS add-on upgrades fail with `ImagePullBackOff`; kube-proxy or CoreDNS version updates stall |
+| Missing `AmazonSSMManagedInstanceCore` | SSM Session Manager cannot connect; no shell access to nodes without a bastion or SSH |
+| `depends_on` for policy attachments removed | Intermittent IAM race at node group creation; node group occasionally fails with a role validation error |
+| `http_tokens = "optional"` (IMDSv2 disabled) | IMDSv1 re-enabled; SSRF vulnerabilities on the node can exfiltrate the node's IAM credentials |
+| `http_put_response_hop_limit = 1` | VPC CNI DaemonSet pods cannot reach IMDS; pod IP assignment fails cluster-wide |
+| `encrypted = false` on EBS volumes | Node disk contents readable if a volume snapshot is shared or physical media is recovered |
+| `delete_on_termination = false` | Orphaned EBS volumes accumulate on every node replacement; unbounded storage cost |
+| `min_size = 1` | During node replacement or AZ failure, the single remaining node may not have enough capacity for the workload's PDB to be satisfied; rolling update can cause an outage |
+| `ignore_changes` on `desired_size` removed | Every `terraform apply` resets node count to `var.desired_size`, fighting the cluster autoscaler and causing disruptive node churn |
+| Nodes in public subnets | Worker nodes get public IPs and are directly reachable from the internet; each node's ports become an external attack surface |
