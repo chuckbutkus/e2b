@@ -61,12 +61,54 @@ data "aws_iam_policy_document" "cluster_autoscaler" {
   }
 }
 
+module "external_dns_irsa" {
+  count  = var.install_external_dns ? 1 : 0
+  source = "../../modules/irsa"
+
+  role_name            = "${var.cluster_name}-external-dns"
+  oidc_provider_arn    = module.cluster.oidc_provider_arn
+  oidc_issuer_url      = module.cluster.cluster_oidc_issuer_url
+  namespace            = "external-dns"
+  service_account_name = "external-dns"
+  policy_json          = data.aws_iam_policy_document.external_dns[0].json
+  attach_inline_policy = true
+  tags                 = var.tags
+}
+
+data "aws_iam_policy_document" "external_dns" {
+  count = var.install_external_dns ? 1 : 0
+
+  statement {
+    effect    = "Allow"
+    actions   = ["route53:ChangeResourceRecordSets"]
+    resources = var.external_dns_hosted_zone_id != "" ? [
+      "arn:aws:route53:::hostedzone/${var.external_dns_hosted_zone_id}"
+    ] : ["arn:aws:route53:::hostedzone/*"]
+  }
+
+  statement {
+    effect = "Allow"
+    actions = [
+      "route53:ListHostedZones",
+      "route53:ListResourceRecordSets",
+      "route53:ListTagsForResource",
+    ]
+    resources = ["*"]
+  }
+}
+
 module "k8s_platform" {
   source = "../../modules/k8s-platform"
 
   cluster_name                = module.cluster.cluster_name
   region                      = var.region
   cluster_autoscaler_role_arn = module.cluster_autoscaler_irsa.role_arn
+
+  acme_email           = var.acme_email
+  install_external_dns = var.install_external_dns
+  external_dns_service_account_annotations = var.install_external_dns ? {
+    "eks.amazonaws.com/role-arn" = module.external_dns_irsa[0].role_arn
+  } : {}
 
   depends_on = [module.node_pool]
 }

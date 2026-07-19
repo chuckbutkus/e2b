@@ -29,6 +29,32 @@ variable "install_metrics_server" {
   default = true
 }
 
+# cert-manager and external-dns both default to false for existing clusters:
+# the customer may already have them installed and a duplicate install would
+# conflict. Opt in explicitly after confirming the cluster state.
+
+variable "install_cert_manager" {
+  type    = bool
+  default = false
+}
+
+variable "acme_email" {
+  description = "Email for Let's Encrypt ACME registration. Leave empty to skip ClusterIssuer creation."
+  type        = string
+  default     = ""
+}
+
+variable "install_external_dns" {
+  type    = bool
+  default = false
+}
+
+variable "external_dns_hosted_zone_id" {
+  description = "Route 53 hosted zone ID to scope the external-dns IAM policy. Leave empty to allow all zones."
+  type        = string
+  default     = ""
+}
+
 variable "tags" {
   type = map(string)
   default = {

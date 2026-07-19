@@ -101,3 +101,23 @@ variable "tags" {
     ManagedBy   = "terraform"
   }
 }
+
+# --- cert-manager / external-dns --------------------------------------------
+
+variable "acme_email" {
+  description = "Email for Let's Encrypt ACME registration. Required to create letsencrypt-staging and letsencrypt-prod ClusterIssuers. Leave empty to skip ClusterIssuer creation."
+  type        = string
+  default     = ""
+}
+
+variable "install_external_dns" {
+  description = "Install external-dns and create an IRSA role with Route 53 write access. Disabled by default — enable once the customer's hosted zone is ready and its ID is known."
+  type        = bool
+  default     = false
+}
+
+variable "external_dns_hosted_zone_id" {
+  description = "Route 53 hosted zone ID to scope the external-dns IAM policy to a specific zone. Leave empty to allow access to all zones in the account (broader but simpler for initial setup)."
+  type        = string
+  default     = ""
+}
