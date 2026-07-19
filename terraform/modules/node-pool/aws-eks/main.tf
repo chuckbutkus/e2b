@@ -56,6 +56,12 @@ resource "aws_iam_role_policy_attachment" "node_policies" {
     "AmazonEKSWorkerNodePolicy",
     "AmazonEKS_CNI_Policy",
     "AmazonEC2ContainerRegistryReadOnly",
+    # SSM: allows node-level debugging via Session Manager without requiring
+    # SSH or a bastion. On Bottlerocket this only works when the admin
+    # container is explicitly enabled via EC2NodeClass userData; on AL2023
+    # the SSM agent runs by default. Kept here for parity with the
+    # Karpenter node role in modules/node-pool/karpenter.
+    "AmazonSSMManagedInstanceCore",
   ])
   role       = aws_iam_role.node.name
   policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/${each.value}"
