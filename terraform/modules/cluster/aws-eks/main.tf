@@ -1,4 +1,62 @@
 data "aws_partition" "current" {}
+data "aws_caller_identity" "current" {}
+
+# --- Secrets envelope encryption --------------------------------------------
+# EKS does not encrypt Kubernetes Secrets at rest with a customer-managed
+# key unless explicitly configured via encryption_config — the default is
+# encrypted-at-rest by AWS's own key only, which is not sufficient for most
+# production/compliance baselines. create_kms_key=true (default) provisions
+# a dedicated CMK per cluster; set it false and pass kms_key_arn to reuse a
+# centrally managed key instead (e.g. a customer's existing security-team-
+# owned KMS key).
+resource "aws_kms_key" "eks_secrets" {
+  count                   = var.create_kms_key ? 1 : 0
+  description             = "EKS Kubernetes secrets envelope encryption for ${var.cluster_name}"
+  deletion_window_in_days = var.kms_key_deletion_window
+  enable_key_rotation     = true
+  tags                    = var.tags
+
+  # EKS's control plane assumes the cluster IAM role to call kms:Encrypt /
+  # kms:Decrypt / kms:DescribeKey / kms:CreateGrant against this key when
+  # reading/writing Secrets — without this statement the default key policy
+  # (root-account-only) blocks the cluster from ever using its own key.
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "EnableAccountRootFullAccess"
+        Effect    = "Allow"
+        Principal = { AWS = "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:root" }
+        Action    = "kms:*"
+        Resource  = "*"
+      },
+      {
+        Sid       = "AllowEKSClusterRoleToUseKey"
+        Effect    = "Allow"
+        Principal = { AWS = aws_iam_role.cluster.arn }
+        Action = [
+          "kms:Encrypt",
+          "kms:Decrypt",
+          "kms:DescribeKey",
+          "kms:CreateGrant",
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_kms_alias" "eks_secrets" {
+  count         = var.create_kms_key ? 1 : 0
+  name          = "alias/${var.cluster_name}-eks-secrets"
+  target_key_id = aws_kms_key.eks_secrets[0].key_id
+}
+
+locals {
+  # Resolve to the key we just created, or the customer-supplied existing
+  # key ARN when create_kms_key = false.
+  kms_key_arn = var.create_kms_key ? aws_kms_key.eks_secrets[0].arn : var.kms_key_arn
+}
 
 resource "aws_iam_role" "cluster" {
   name = "${var.cluster_name}-eks-cluster"
@@ -55,12 +113,35 @@ resource "aws_eks_cluster" "this" {
 
   enabled_cluster_log_types = var.enabled_cluster_log_types
 
+  encryption_config {
+    provider {
+      key_arn = local.kms_key_arn
+    }
+    resources = ["secrets"]
+  }
+
   tags = var.tags
 
   depends_on = [
     aws_iam_role_policy_attachment.cluster_policy,
     aws_cloudwatch_log_group.cluster,
   ]
+
+  lifecycle {
+    precondition {
+      condition     = var.create_kms_key || var.kms_key_arn != null
+      error_message = "create_kms_key is false but kms_key_arn was not set — pass the ARN of an existing CMK, or leave create_kms_key at its default (true) to have this module provision one."
+    }
+    precondition {
+      # Defaulting public_access_cidrs to 0.0.0.0/0 is how EKS clusters end
+      # up with an internet-reachable control plane API by accident. If the
+      # public endpoint is on, the caller must say explicitly who can reach
+      # it (office CIDR, VPN range, etc.) — or turn endpoint_public_access
+      # off entirely for a fully private cluster.
+      condition     = !var.endpoint_public_access || length(var.public_access_cidrs) > 0
+      error_message = "endpoint_public_access is true but public_access_cidrs is empty. Set explicit CIDRs allowed to reach the public API endpoint, or set endpoint_public_access = false for a private-only cluster."
+    }
+  }
 }
 
 # --- OIDC provider for IRSA -------------------------------------------------

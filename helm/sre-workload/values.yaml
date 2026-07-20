@@ -118,7 +118,23 @@ securityContext:
 
 networkPolicy:
   enabled: true
-  # Extra ingress/egress rules layered on top of the default-deny baseline.
+  # Ingress is scoped by default to pods running in these namespaces —
+  # the ingress-nginx and nginx-gateway namespaces this repo's Terraform
+  # k8s-platform module installs into — rather than allowed from anywhere
+  # in the cluster. Standard namespaces carry the kubernetes.io/metadata.name
+  # label automatically (k8s 1.21+), which is what the template selects on.
+  # Override this list for BYO-cluster environments where the ingress
+  # controller/gateway lives in a different namespace.
+  allowedIngressNamespaces:
+    - ingress-nginx
+    - nginx-gateway
+  # Escape hatch: allow ingress from any pod in-cluster instead of scoping
+  # by namespace. Only turn this on if the real traffic source can't be
+  # expressed as a namespace selector (e.g. a caller in an unpredictable
+  # namespace) — prefer extraIngress with a precise selector instead where
+  # possible.
+  allowFromAnywhereInCluster: false
+  # Extra ingress/egress rules layered on top of the baseline above.
   # Empty by default; customers/environments add what the workload actually
   # needs to talk to (DNS egress is always allowed, see templates).
   extraIngress: []

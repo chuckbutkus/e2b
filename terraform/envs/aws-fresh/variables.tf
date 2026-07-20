@@ -33,6 +33,30 @@ variable "public_subnet_cidrs" {
   default = ["10.0.128.0/20", "10.0.144.0/20", "10.0.160.0/20"]
 }
 
+variable "endpoint_public_access" {
+  description = "Expose the EKS API server publicly. If true, public_access_cidrs must be set to something narrower than 0.0.0.0/0."
+  type        = bool
+  default     = true
+}
+
+variable "public_access_cidrs" {
+  description = "CIDRs allowed to reach the public API endpoint when endpoint_public_access = true. No safe default — set this to your office/VPN egress range(s) per environment. Enforced by a precondition in the cluster module."
+  type        = list(string)
+  default     = []
+}
+
+variable "create_kms_key" {
+  description = "Provision a dedicated CMK for EKS secrets envelope encryption. Set false and supply kms_key_arn to reuse an existing centrally-managed key."
+  type        = bool
+  default     = true
+}
+
+variable "kms_key_arn" {
+  description = "Existing CMK ARN, used only when create_kms_key = false."
+  type        = string
+  default     = null
+}
+
 variable "node_instance_types" {
   type    = list(string)
   default = ["m6i.large"]

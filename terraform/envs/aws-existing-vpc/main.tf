@@ -10,11 +10,15 @@ module "network" {
 module "cluster" {
   source = "../../modules/cluster/aws-eks"
 
-  cluster_name        = var.cluster_name
-  kubernetes_version  = var.kubernetes_version
-  vpc_id              = module.network.vpc_id
-  subnet_ids          = module.network.private_subnet_ids
-  tags                = var.tags
+  cluster_name             = var.cluster_name
+  kubernetes_version       = var.kubernetes_version
+  vpc_id                   = module.network.vpc_id
+  subnet_ids               = module.network.private_subnet_ids
+  endpoint_public_access   = var.endpoint_public_access
+  public_access_cidrs      = var.public_access_cidrs
+  create_kms_key           = var.create_kms_key
+  kms_key_arn              = var.kms_key_arn
+  tags                     = var.tags
 }
 
 module "node_pool" {

@@ -13,15 +13,28 @@ spec:
     - Ingress
     - Egress
   ingress:
-    # Baseline: allow traffic on the app port from anywhere in-cluster.
-    # Tighten this with a namespaceSelector/podSelector (e.g. restrict to
-    # the ingress-controller namespace) once the real traffic topology is
-    # known — left permissive-within-cluster by default so the chart
-    # doesn't silently break ingress routing for every customer.
+    {{- if .Values.networkPolicy.allowFromAnywhereInCluster }}
+    # Explicit opt-out of namespace scoping — allow traffic on the app port
+    # from any pod in-cluster.
     - from: []
       ports:
         - protocol: TCP
           port: {{ .Values.service.targetPort }}
+    {{- else }}
+    # Scoped to the ingress-controller / gateway namespaces by default
+    # (see networkPolicy.allowedIngressNamespaces) instead of the whole
+    # cluster. Set networkPolicy.allowFromAnywhereInCluster=true if the
+    # real traffic source can't be expressed this way.
+    {{- range .Values.networkPolicy.allowedIngressNamespaces }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . }}
+      ports:
+        - protocol: TCP
+          port: {{ $.Values.service.targetPort }}
+    {{- end }}
+    {{- end }}
     {{- with .Values.networkPolicy.extraIngress }}
     {{- toYaml . | nindent 4 }}
     {{- end }}

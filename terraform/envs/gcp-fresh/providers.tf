@@ -19,7 +19,7 @@ terraform {
   # Configured via `terraform init -backend-config=../../backend-config/gcp-fresh.hcl`
   # so this root module stays reusable across customer GCP projects
   # without a hardcoded bucket name.
-  backend "gcs" {}
+  #backend "gcs" {}
 }
 
 provider "google" {

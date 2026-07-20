@@ -27,9 +27,16 @@ variable "endpoint_private_access" {
 }
 
 variable "public_access_cidrs" {
-  description = "CIDRs allowed to reach the public API endpoint. Restrict this in production — default is permissive for initial setup only."
+  description = <<-EOT
+    CIDRs allowed to reach the public API endpoint. No default on purpose —
+    if endpoint_public_access is true, this must be set explicitly (e.g.
+    your office/VPN egress range) rather than silently falling back to
+    0.0.0.0/0. Enforced by a precondition on the cluster resource. Leave
+    empty and set endpoint_public_access = false for a fully private
+    cluster instead.
+  EOT
   type        = list(string)
-  default     = ["0.0.0.0/0"]
+  default     = []
 }
 
 variable "enabled_cluster_log_types" {
@@ -41,4 +48,22 @@ variable "enabled_cluster_log_types" {
 variable "tags" {
   type    = map(string)
   default = {}
+}
+
+variable "create_kms_key" {
+  description = "Provision a dedicated CMK for EKS secrets envelope encryption. Set false and pass kms_key_arn to reuse an existing customer-managed key instead."
+  type        = bool
+  default     = true
+}
+
+variable "kms_key_arn" {
+  description = "Existing CMK ARN to use for secrets encryption when create_kms_key = false. Ignored otherwise."
+  type        = string
+  default     = null
+}
+
+variable "kms_key_deletion_window" {
+  description = "Days KMS waits before actually deleting the key after a destroy (7-30). Shorter aids iterative dev/test environments; production should stay at the AWS default of 30."
+  type        = number
+  default     = 30
 }

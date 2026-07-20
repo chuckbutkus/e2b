@@ -27,7 +27,7 @@ terraform {
   # Configured via `terraform init -backend-config=../../backend-config/aws-fresh.hcl`
   # so this root module stays reusable across customer AWS accounts
   # without a hardcoded bucket name.
-  backend "s3" {}
+  #backend "s3" {}
 }
 
 provider "aws" {
