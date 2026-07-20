@@ -168,16 +168,15 @@ resource "helm_release" "cert_manager" {
 
 locals {
   create_cluster_issuers = var.install_cert_manager && var.acme_email != ""
+
   # Use the Gateway API solver only when NGF is the sole HTTP controller.
   # When ingress-nginx is also installed, the simpler ingress solver is used
   # and the two controllers coexist without conflict.
   use_gateway_acme_solver = var.install_nginx_gateway_fabric && !var.install_ingress_nginx
-}
 
-resource "kubectl_manifest" "cluster_issuer_staging" {
-  count = local.create_cluster_issuers ? 1 : 0
-
-  yaml_body = local.use_gateway_acme_solver ? <<-YAML
+  # HCL does not support heredoc strings as ternary branches, so each YAML
+  # variant is precomputed as a local and the ternary selects between them.
+  _staging_gateway_yaml = <<-YAML
     apiVersion: cert-manager.io/v1
     kind: ClusterIssuer
     metadata:
@@ -195,7 +194,9 @@ resource "kubectl_manifest" "cluster_issuer_staging" {
                   - name: acme-gateway
                     namespace: nginx-gateway
                     kind: Gateway
-    YAML : <<-YAML
+  YAML
+
+  _staging_ingress_yaml = <<-YAML
     apiVersion: cert-manager.io/v1
     kind: ClusterIssuer
     metadata:
@@ -210,48 +211,59 @@ resource "kubectl_manifest" "cluster_issuer_staging" {
           - http01:
               ingress:
                 ingressClassName: nginx
-    YAML
+  YAML
+
+  _prod_gateway_yaml = <<-YAML
+    apiVersion: cert-manager.io/v1
+    kind: ClusterIssuer
+    metadata:
+      name: letsencrypt-prod
+    spec:
+      acme:
+        server: https://acme-v02.api.letsencrypt.org/directory
+        email: ${var.acme_email}
+        privateKeySecretRef:
+          name: letsencrypt-prod-key
+        solvers:
+          - http01:
+              gatewayHTTPRoute:
+                parentRefs:
+                  - name: acme-gateway
+                    namespace: nginx-gateway
+                    kind: Gateway
+  YAML
+
+  _prod_ingress_yaml = <<-YAML
+    apiVersion: cert-manager.io/v1
+    kind: ClusterIssuer
+    metadata:
+      name: letsencrypt-prod
+    spec:
+      acme:
+        server: https://acme-v02.api.letsencrypt.org/directory
+        email: ${var.acme_email}
+        privateKeySecretRef:
+          name: letsencrypt-prod-key
+        solvers:
+          - http01:
+              ingress:
+                ingressClassName: nginx
+  YAML
+
+  cluster_issuer_staging_yaml = local.use_gateway_acme_solver ? local._staging_gateway_yaml : local._staging_ingress_yaml
+  cluster_issuer_prod_yaml    = local.use_gateway_acme_solver ? local._prod_gateway_yaml : local._prod_ingress_yaml
+}
+
+resource "kubectl_manifest" "cluster_issuer_staging" {
+  count     = local.create_cluster_issuers ? 1 : 0
+  yaml_body = local.cluster_issuer_staging_yaml
 
   depends_on = [helm_release.cert_manager, helm_release.nginx_gateway_fabric, kubectl_manifest.acme_gateway]
 }
 
 resource "kubectl_manifest" "cluster_issuer_prod" {
-  count = local.create_cluster_issuers ? 1 : 0
-
-  yaml_body = local.use_gateway_acme_solver ? <<-YAML
-    apiVersion: cert-manager.io/v1
-    kind: ClusterIssuer
-    metadata:
-      name: letsencrypt-prod
-    spec:
-      acme:
-        server: https://acme-v02.api.letsencrypt.org/directory
-        email: ${var.acme_email}
-        privateKeySecretRef:
-          name: letsencrypt-prod-key
-        solvers:
-          - http01:
-              gatewayHTTPRoute:
-                parentRefs:
-                  - name: acme-gateway
-                    namespace: nginx-gateway
-                    kind: Gateway
-    YAML : <<-YAML
-    apiVersion: cert-manager.io/v1
-    kind: ClusterIssuer
-    metadata:
-      name: letsencrypt-prod
-    spec:
-      acme:
-        server: https://acme-v02.api.letsencrypt.org/directory
-        email: ${var.acme_email}
-        privateKeySecretRef:
-          name: letsencrypt-prod-key
-        solvers:
-          - http01:
-              ingress:
-                ingressClassName: nginx
-    YAML
+  count     = local.create_cluster_issuers ? 1 : 0
+  yaml_body = local.cluster_issuer_prod_yaml
 
   depends_on = [helm_release.cert_manager, helm_release.nginx_gateway_fabric, kubectl_manifest.acme_gateway]
 }
