@@ -35,7 +35,7 @@ helm install sre-workload ./helm/sre-workload \
   --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=<IRSA_ROLE_ARN> \
   --set ingress.host=<your-hostname> \
   --namespace default \
-  --wait --timeout 5m
+  --atomic --cleanup-on-fail --timeout 5m
 
 # First install — GCP
 helm install sre-workload ./helm/sre-workload \
@@ -44,19 +44,27 @@ helm install sre-workload ./helm/sre-workload \
   --set serviceAccount.annotations."iam\.gke\.io/gcp-service-account"=<GSA_EMAIL> \
   --set ingress.host=<your-hostname> \
   --namespace default \
-  --wait --timeout 5m
+  --atomic --cleanup-on-fail --timeout 5m
 
-# Upgrade (change --install to upgrade; same flags)
+# Upgrade (change install to upgrade; same flags)
 helm upgrade sre-workload ./helm/sre-workload \
   -f helm/sre-workload/values.yaml \
   -f helm/sre-workload/values-aws.yaml \
   --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=<IRSA_ROLE_ARN> \
   --set ingress.host=<your-hostname> \
   --namespace default \
-  --wait --timeout 5m
+  --atomic --cleanup-on-fail --timeout 5m
 ```
 
-`--wait` blocks until all pods are Ready and the rollout is complete. If the upgrade does not converge within the timeout, Helm marks it as failed but does **not** automatically roll back — see [Rollback](#rollback) below.
+`--atomic` implies `--wait`: it blocks until all pods are Ready and the rollout completes, exactly like plain `--wait` did before. The difference is what happens on failure. If the release does not converge within `--timeout`:
+
+- **`helm upgrade --atomic`** automatically rolls the release back to the last successful revision — no broken release sits around waiting for someone to notice and run `helm rollback` by hand.
+- **`helm install --atomic`** (no prior successful revision to roll back to) deletes everything the failed install created, so a bad first install doesn't leave orphaned/partial resources behind.
+- **`--cleanup-on-fail`** additionally removes any new resources the failed release created that Helm wouldn't otherwise clean up on its own (belt-and-suspenders alongside `--atomic`).
+
+This is what CI/CD deploy steps should use unconditionally — a pipeline that just runs `--wait` and calls the job "done" leaves a broken release in place on failure, which pages someone later instead of failing loudly (and safely) in the pipeline itself.
+
+`--atomic` does **not** replace [Rollback](#rollback) below — it only auto-reverts the release it was invoked for. Rolling back to an older revision after a deploy has already succeeded (e.g. "revision 12 looked fine at the time but we want revision 10 now") is still a manual `helm rollback` call.
 
 ---
 
@@ -182,7 +190,10 @@ The image `ghcr.io/e2b-dev/sre-interview:latest` is public. If this error appear
      --docker-server=ghcr.io \
      --docker-username=<github-user> \
      --docker-password=<pat>
-   helm upgrade sre-workload ... --set imagePullSecrets[0].name=ghcr-pull-secret
+   helm upgrade sre-workload ./helm/sre-workload \
+     -f helm/sre-workload/values.yaml -f helm/sre-workload/values-aws.yaml \
+     --set imagePullSecrets[0].name=ghcr-pull-secret \
+     --atomic --cleanup-on-fail --timeout 5m
    ```
 
 ### Pods stuck in `Pending`
