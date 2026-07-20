@@ -726,19 +726,23 @@ The IRSA pattern closes the loop: this module creates the IAM role, and the next
 **Receives from irsa module**: `cluster_autoscaler_role_arn`  
 **Depends on**: node pool (nodes must be Ready before Helm can schedule pods)
 
-This module installs three Helm charts that the workload and the cluster itself depend on. They are cluster-scoped infrastructure — shared across all workloads, requiring cloud IAM in one case — so they belong here in Terraform rather than in the workload's own Helm chart.
+This module installs the Helm charts and Kubernetes resources that the workload and the cluster depend on. They are cluster-scoped infrastructure — shared across all workloads — so they belong in Terraform rather than in the workload's own Helm chart.
 
 In `aws-fresh`, the env calls this module with `depends_on = [module.node_pool]`. That dependency is non-obvious but critical: Helm applies Kubernetes resources, and Kubernetes schedules pods onto nodes. If `k8s_platform` runs before any node is Ready, every Helm chart installation fails immediately because there is nowhere to schedule the pods the charts create.
 
 ### Resource inventory
 
-All three resources are `helm_release`. None creates AWS resources directly; instead they install Kubernetes controllers that themselves make AWS API calls (for ingress-nginx via the cluster role from section 2, and for cluster-autoscaler via the IRSA role from section 4).
-
-| Resource | Chart | Version | Namespace | Opt-out variable |
+| Resource | Kind | Chart / API | Namespace | Opt-out variable |
 |---|---|---|---|---|
-| `helm_release.metrics_server` | `metrics-server` | 3.12.2 | `kube-system` | `install_metrics_server` |
-| `helm_release.ingress_nginx` | `ingress-nginx` | 4.11.3 | `ingress-nginx` | `install_ingress_nginx` |
-| `helm_release.cluster_autoscaler` | `cluster-autoscaler` | 9.43.2 | `kube-system` | `install_cluster_autoscaler` |
+| `helm_release.metrics_server` | Helm | `metrics-server` 3.12.2 | `kube-system` | `install_metrics_server` |
+| `helm_release.ingress_nginx` | Helm | `ingress-nginx` 4.11.3 | `ingress-nginx` | `install_ingress_nginx` |
+| `helm_release.cluster_autoscaler` | Helm | `cluster-autoscaler` 9.43.2 | `kube-system` | `install_cluster_autoscaler` |
+| `helm_release.nginx_gateway_fabric` | Helm | `nginx-gateway-fabric` 1.6.1 | `nginx-gateway` | `install_nginx_gateway_fabric` |
+| `kubectl_manifest.acme_gateway` | `Gateway` | `gateway.networking.k8s.io/v1` | `nginx-gateway` | created when NGF installed and ingress-nginx disabled |
+| `helm_release.cert_manager` | Helm | `cert-manager` v1.16.2 | `cert-manager` | `install_cert_manager` |
+| `kubectl_manifest.cluster_issuer_staging` | `ClusterIssuer` | `cert-manager.io/v1` | cluster-scoped | created when `acme_email != ""` |
+| `kubectl_manifest.cluster_issuer_prod` | `ClusterIssuer` | `cert-manager.io/v1` | cluster-scoped | created when `acme_email != ""` |
+| `helm_release.external_dns` | Helm | `external-dns` | `external-dns` | `install_external_dns` |
 
 ### Resources in detail
 
@@ -768,7 +772,7 @@ ingress-nginx is the in-cluster component that receives HTTP/S traffic from the 
 
 **`service.type = LoadBalancer`.** When ingress-nginx creates a Service of type LoadBalancer, the Kubernetes cloud controller on EKS (backed by the cluster role's `elasticloadbalancing:*` permissions from section 2) provisions a real AWS load balancer and attaches it to the nodes. The load balancer's DNS name becomes the entry point for all external traffic.
 
-**`aws-load-balancer-type: nlb`.** This annotation requests an Network Load Balancer rather than the legacy Classic Load Balancer. NLB is the correct choice for EKS with VPC-native pod networking for two reasons:
+**`aws-load-balancer-type: nlb`.** This annotation requests a Network Load Balancer rather than the legacy Classic Load Balancer. NLB is the correct choice for EKS with VPC-native pod networking for two reasons:
 
 First, NLB supports `target-type: ip`, which routes traffic directly to pod IPs rather than to node IP + NodePort. Because VPC CNI gives pods real VPC addresses, the load balancer can route to them without an additional hop through the node. The classic ELB only supports instance mode (traffic arrives at the node on a NodePort, then kube-proxy forwards it to the pod), which adds latency and is less efficient.
 
@@ -791,17 +795,107 @@ The cluster-autoscaler watches for pods that cannot be scheduled due to insuffic
 
 **IRSA wiring.** The `rbac.serviceAccount.annotations` value injects the IRSA role ARN as an annotation on the `cluster-autoscaler` ServiceAccount in `kube-system`. The EKS pod identity webhook reads this annotation when the autoscaler pod starts and injects the projected service account token and `AWS_ROLE_ARN` / `AWS_WEB_IDENTITY_TOKEN_FILE` environment variables, completing the IRSA chain from section 4.
 
+#### NGINX Gateway Fabric (`helm_release.nginx_gateway_fabric`)
+
+```
+chart:      nginx-gateway-fabric  1.6.1  (OCI: ghcr.io/nginx/charts)
+namespace:  nginx-gateway  (created by create_namespace = true)
+service.type:   LoadBalancer
+installed:  only when install_nginx_gateway_fabric = true (default: false)
+```
+
+NGINX Gateway Fabric (NGF) implements the Kubernetes Gateway API — it is an alternative to ingress-nginx for workloads that use `Gateway` and `HTTPRoute` resources instead of `Ingress`. The default is disabled; set `install_nginx_gateway_fabric = true` to enable it.
+
+The NGF Helm chart includes the Gateway API standard-channel CRDs (`GatewayClass`, `Gateway`, `HTTPRoute`, `ReferenceGrant`, etc.) in its own `crds/` directory. Installing the chart installs the CRDs — no separate `kubectl apply` step is required.
+
+`wait = true` is required. The NGF chart creates a `GatewayClass` named `nginx`, and any workload chart that applies `Gateway` or `HTTPRoute` resources needs that GatewayClass to be registered before it runs. Without `wait`, Terraform races the two Helm installs and workload chart installation may fail with "no matches for kind GatewayClass."
+
+**Coexistence with ingress-nginx.** Both controllers can run simultaneously. ingress-nginx continues serving `Ingress` resources while workloads migrate to `HTTPRoute` incrementally. Disable ingress-nginx only after all workloads have moved to Gateway API.
+
+#### ACME gateway (`kubectl_manifest.acme_gateway`)
+
+```
+apiVersion: gateway.networking.k8s.io/v1 / kind: Gateway
+name:       acme-gateway
+namespace:  nginx-gateway
+created:    when install_nginx_gateway_fabric=true AND install_ingress_nginx=false
+```
+
+When NGF is the sole HTTP controller, cert-manager cannot use the `http01.ingress` solver (no ingress-nginx controller to serve challenge requests). This Gateway provides an HTTP-only listener on port 80 open to all namespaces, which cert-manager's `http01.gatewayHTTPRoute` solver uses to create temporary HTTPRoutes for ACME HTTP-01 challenges.
+
+When ingress-nginx is also installed, this resource is not created — the ingress solver handles challenges and the two controllers coexist without conflict.
+
+#### cert-manager (`helm_release.cert_manager`)
+
+```
+chart:      cert-manager  v1.16.2
+namespace:  cert-manager
+installed:  only when install_cert_manager = true (default: true)
+```
+
+cert-manager automates TLS certificate lifecycle management. It watches `Certificate`, `Ingress` (when annotated), and optionally `Gateway` resources, requests certificates from the configured ClusterIssuer, completes ACME challenges, and writes the resulting certificate and private key into a Kubernetes Secret.
+
+`crds.enabled = true` installs the cert-manager CRDs (`Certificate`, `CertificateRequest`, `ClusterIssuer`, `Issuer`, etc.) as part of the Helm release. This keeps the CRDs in Terraform state and upgrades them with the chart. The alternative — manually applying the CRD bundle before every cert-manager upgrade — is not manageable at scale.
+
+`wait = true` is required. The two `ClusterIssuer` kubectl_manifest resources below depend on the cert-manager CRDs being registered. Without `wait`, Terraform may attempt to apply the ClusterIssuers before the CRDs exist, producing a "no matches for kind ClusterIssuer" error.
+
+#### ClusterIssuers (`kubectl_manifest.cluster_issuer_staging`, `kubectl_manifest.cluster_issuer_prod`)
+
+```
+apiVersion: cert-manager.io/v1 / kind: ClusterIssuer
+created:    when install_cert_manager=true AND acme_email != ""
+```
+
+Two ClusterIssuers are created when `acme_email` is provided:
+
+- **`letsencrypt-staging`** targets `acme-staging-v02.api.letsencrypt.org`. Its certificates are cryptographically valid but issued by a CA that browsers do not trust. Use staging first to validate domain ownership and ACME configuration without consuming Let's Encrypt production rate limits.
+- **`letsencrypt-prod`** targets `acme-v02.api.letsencrypt.org` and issues certificates trusted by all major browsers.
+
+**Solver selection.** The solver used for HTTP-01 challenges is chosen based on which HTTP controller is installed:
+
+| `install_ingress_nginx` | `install_nginx_gateway_fabric` | Solver |
+|---|---|---|
+| `true` (default) | any | `http01.ingress` via ingress-nginx |
+| `false` | `true` | `http01.gatewayHTTPRoute` via `acme-gateway` |
+
+When the `gatewayHTTPRoute` solver is used, it creates a temporary `HTTPRoute` in the workload namespace that routes the ACME challenge path to cert-manager's solver pod, using the `acme-gateway` resource as the parent ref.
+
+#### external-dns (`helm_release.external_dns`)
+
+```
+chart:      external-dns
+namespace:  external-dns
+installed:  only when install_external_dns = true (default: false)
+```
+
+external-dns watches `Ingress` and `Service` resources and creates matching DNS records in Route 53. When an Ingress with a hostname is created, external-dns creates an A or CNAME record pointing to the ingress-nginx NLB. When the Ingress is deleted, external-dns deletes the record (with `policy = upsert-only`, records are never auto-deleted — see below).
+
+`policy = upsert-only` means external-dns creates and updates DNS records it manages but never deletes them. The alternative (`policy = sync`) would delete Route 53 records that are no longer referenced by an Ingress or Service. `upsert-only` is the safe production default: a misconfigured label selector or a temporarily missing Ingress will not wipe a live DNS record.
+
+`txtOwnerId = cluster_name` — external-dns writes a TXT record alongside every A/CNAME record to claim ownership. The owner ID distinguishes this cluster's records from records created by other clusters sharing the same hosted zone.
+
+**IRSA.** external-dns requires Route 53 write access. In `aws-fresh` (and `aws-existing-vpc`), a dedicated `module.external_dns_irsa` is instantiated with the following policy:
+- `route53:ChangeResourceRecordSets` on the target hosted zone (or all zones if `external_dns_hosted_zone_id` is empty).
+- `route53:ListHostedZones`, `ListResourceRecordSets`, `ListTagsForResource` on `*` (Route 53 does not support resource-level restrictions on List operations).
+
+The IRSA role ARN is passed to the chart via `serviceAccount.annotations["eks.amazonaws.com/role-arn"]`.
+
 ### What happens if this module is misconfigured
 
 | Misconfiguration | Failure mode |
 |---|---|
-| Module applied before node pool is Ready | All three Helm installs fail; pods cannot be scheduled; Terraform exits with a Helm timeout error |
+| Module applied before node pool is Ready | All Helm installs fail; pods cannot be scheduled; Terraform exits with a Helm timeout error |
 | metrics-server not installed | HPA reports `<unknown>` targets; no pod autoscaling occurs |
 | `--kubelet-insecure-tls` added on EKS | Unnecessary; suppresses a real TLS error if the kubelet cert has been tampered with |
 | `aws-load-balancer-type: nlb` annotation missing | Classic Load Balancer provisioned instead; `target-type: ip` mode unavailable; higher latency; source IP not preserved |
 | `create_namespace = false` for ingress-nginx | Install fails if the `ingress-nginx` namespace does not already exist |
 | cluster-autoscaler installed alongside Karpenter | Both controllers issue conflicting scale-out and scale-in calls; node count thrashes; cost spikes |
-| `cluster_autoscaler_role_arn` empty when installing autoscaler | `precondition` fails at plan time with a clear message; if bypassed, the autoscaler pod starts but gets `AccessDenied` on every AWS call |
+| `cluster_autoscaler_role_arn` empty when installing autoscaler | `precondition` fails at plan time; if bypassed, the autoscaler gets `AccessDenied` on every AWS call |
+| `install_nginx_gateway_fabric = true` without `wait = true` | GatewayClass not yet registered when workload chart applies Gateway/HTTPRoute; "no matches for kind" error |
+| NGF and ingress-nginx both disabled with cert-manager enabled and ACME email set | No HTTP controller exists to serve challenges; certificate issuance fails |
+| `install_cert_manager = false` with workload using cert-manager annotations | Ingress annotation is ignored; no certificate is provisioned; HTTPS listener gets no Secret |
+| `acme_email` empty with cert-manager enabled | cert-manager installs but no ClusterIssuers are created; annotations on Ingress/Certificate resources referencing `letsencrypt-*` fail |
+| `install_external_dns = true` without `external_dns_irsa` module | IRSA annotations are empty; external-dns pod starts but gets `AccessDenied` on all Route 53 calls |
 
 ---
 
