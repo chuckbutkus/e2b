@@ -1,0 +1,6 @@
+region = "us-east-1"
+azs    = ["us-east-1a", "us-east-1b", "us-east-1c"]
+enable_karpenter     = true
+karpenter_ami_family = "Bottlerocket"
+install_nginx_gateway_fabric = true
+acme_email = "ops@example.com"
