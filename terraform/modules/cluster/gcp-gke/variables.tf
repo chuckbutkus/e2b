@@ -46,15 +46,18 @@ variable "master_ipv4_cidr_block" {
 }
 
 variable "master_authorized_networks" {
-  description = "CIDRs allowed to reach the public control plane endpoint. Restrict this in production — default is permissive for initial setup only, matching the EKS module's public_access_cidrs default."
+  description = <<-EOT
+    CIDRs allowed to reach the control plane endpoint. No default on
+    purpose — must be set explicitly (e.g. your office/VPN egress range)
+    rather than silently falling back to 0.0.0.0/0. Enforced by a
+    precondition on the cluster resource, matching the EKS module's
+    public_access_cidrs behaviour.
+  EOT
   type = list(object({
     cidr_block   = string
     display_name = string
   }))
-  default = [{
-    cidr_block   = "0.0.0.0/0"
-    display_name = "all (restrict before production)"
-  }]
+  default = []
 }
 
 variable "tags" {
@@ -67,4 +70,16 @@ variable "deletion_protection" {
   description = "GKE's own deletion protection. Defaults to false here since this is an assignment/test context where tear-down needs to be easy — flip to true for anything real."
   type        = bool
   default     = false
+}
+
+variable "create_kms_key" {
+  description = "Provision a dedicated Cloud KMS key ring + key for GKE application-layer secrets encryption. Set false and pass kms_key_id to reuse an existing customer-managed key."
+  type        = bool
+  default     = true
+}
+
+variable "kms_key_id" {
+  description = "Existing Cloud KMS crypto key resource ID to use for secrets encryption when create_kms_key = false. Ignored otherwise."
+  type        = string
+  default     = null
 }

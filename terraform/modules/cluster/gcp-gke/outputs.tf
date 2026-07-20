@@ -26,3 +26,8 @@ output "cluster_id" {
 output "master_version" {
   value = google_container_cluster.this.master_version
 }
+
+output "kms_key_id" {
+  description = "Resource ID of the Cloud KMS key used for GKE application-layer secrets encryption."
+  value       = local.kms_key_id
+}

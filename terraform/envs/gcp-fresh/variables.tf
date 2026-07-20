@@ -18,6 +18,27 @@ variable "release_channel" {
   default = "REGULAR"
 }
 
+variable "master_authorized_networks" {
+  description = "CIDRs allowed to reach the GKE control plane endpoint. No safe default — set this to your office/VPN egress range(s) per environment. Enforced by a precondition in the cluster module."
+  type = list(object({
+    cidr_block   = string
+    display_name = string
+  }))
+  default = []
+}
+
+variable "create_kms_key" {
+  description = "Provision a dedicated Cloud KMS key for GKE application-layer secrets encryption. Set false and supply kms_key_id to reuse an existing centrally-managed key."
+  type        = bool
+  default     = true
+}
+
+variable "kms_key_id" {
+  description = "Existing Cloud KMS crypto key resource ID, used only when create_kms_key = false."
+  type        = string
+  default     = null
+}
+
 variable "subnet_cidr" {
   type    = string
   default = "10.0.0.0/20"

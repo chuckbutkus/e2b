@@ -13,15 +13,18 @@ module "network" {
 module "cluster" {
   source = "../../modules/cluster/gcp-gke"
 
-  cluster_name          = var.cluster_name
-  project_id            = var.project_id
-  region                = var.region
-  network_self_link     = module.network.network_self_link
-  subnetwork_self_link  = module.network.subnetwork_self_link
-  pods_range_name       = module.network.pods_range_name
-  services_range_name   = module.network.services_range_name
-  release_channel       = var.release_channel
-  tags                  = var.tags
+  cluster_name               = var.cluster_name
+  project_id                 = var.project_id
+  region                     = var.region
+  network_self_link          = module.network.network_self_link
+  subnetwork_self_link       = module.network.subnetwork_self_link
+  pods_range_name            = module.network.pods_range_name
+  services_range_name        = module.network.services_range_name
+  release_channel             = var.release_channel
+  master_authorized_networks = var.master_authorized_networks
+  create_kms_key              = var.create_kms_key
+  kms_key_id                  = var.kms_key_id
+  tags                         = var.tags
 }
 
 module "node_pool" {
