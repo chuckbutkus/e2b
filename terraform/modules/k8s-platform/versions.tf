@@ -10,7 +10,7 @@ terraform {
       # cert-manager chart (which installs the CRDs) and the ClusterIssuer
       # resources that use them are applied in the same run.
       source  = "gavinbunney/kubectl"
-      version = ">= 1.14"
+      version = ">= 1.14, < 2.0.0"
     }
   }
 }

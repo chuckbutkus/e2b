@@ -24,11 +24,23 @@ Verified by running the container locally (`docker run --rm -p 18080:8080 -p 190
   catch-all — but its purpose is unconfirmed: it isn't Prometheus `/metrics`
   and isn't the standard `net/http/pprof` mount either. **This port is
   intentionally not exposed anywhere in this chart** — no `Service` port, no
-  `Ingress`, no `NetworkPolicy` allow rule. If its purpose becomes known
-  later (check container docs/source, or `strings` the binary for route
-  literals), it's a small addition: a second container port, a matching
-  `Service` port, and a scoped `NetworkPolicy` egress/ingress rule rather
-  than opening it broadly.
+  `Ingress`, no `NetworkPolicy` allow rule.
+
+  **To investigate before enabling:** run the container and probe the port
+  to enumerate live routes:
+  ```bash
+  docker run --rm -d -p 18080:8080 -p 19090:9090 --name sre-probe ghcr.io/e2b-dev/sre-interview:latest
+  # Scan for known admin/metrics/debug path patterns
+  for path in /metrics /debug/pprof /debug/vars /healthz /readyz /admin /status /info /version; do
+    echo -n "$path: "; curl -s -o /dev/null -w "%{http_code}" http://localhost:19090$path; echo
+  done
+  # Extract route strings from the binary if Go-based
+  docker exec sre-probe sh -c 'strings /proc/1/exe 2>/dev/null | grep -E "^/(metrics|debug|admin|pprof|status|api)" | sort -u'
+  docker rm -f sre-probe
+  ```
+  Once the routes are confirmed, add a second named port (`internal`) to
+  the `Service`, a matching container port, and a scoped `NetworkPolicy`
+  ingress rule rather than opening it broadly.
 
 ## Install
 

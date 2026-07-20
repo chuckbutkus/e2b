@@ -12,8 +12,9 @@
 # this file and set ingress.enabled=false here explicitly.
 
 serviceAccount:
-  annotations:
-    eks.amazonaws.com/role-arn: ""
+  # Supply via --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=<IRSA_ROLE_ARN>
+  # if the workload needs AWS API access. Omit if no IAM role is required.
+  annotations: {}
 
 storageClassName: gp3
 

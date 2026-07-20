@@ -108,6 +108,16 @@ resource "google_container_cluster" "this" {
     key_name = local.kms_key_id
   }
 
+  # Restrict auto-upgrades and auto-repair to a known low-traffic window so
+  # GKE doesn't schedule node operations unpredictably during business hours.
+  maintenance_policy {
+    recurring_window {
+      start_time = var.maintenance_start_time
+      end_time   = var.maintenance_end_time
+      recurrence = var.maintenance_recurrence
+    }
+  }
+
   resource_labels = var.tags
 
   deletion_protection = var.deletion_protection

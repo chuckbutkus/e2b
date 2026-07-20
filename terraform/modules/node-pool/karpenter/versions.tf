@@ -17,7 +17,7 @@ terraform {
       # schema validation and handles this create-CRD-then-use-CRD
       # ordering correctly as long as depends_on is set (see controller.tf).
       source  = "gavinbunney/kubectl"
-      version = ">= 1.14"
+      version = ">= 1.14, < 2.0.0"
     }
   }
 }

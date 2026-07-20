@@ -4,9 +4,12 @@
 #     --set ingress.host=sre.example.com
 
 serviceAccount:
-  annotations:
-    # Populated by Terraform output (modules/workload-identity) at deploy time.
-    iam.gke.io/gcp-service-account: ""
+  # Supply the GSA email at install time if the workload needs GCP API access:
+  #   --set serviceAccount.annotations."iam\.gke\.io/gcp-service-account"=<GSA_EMAIL>
+  # Omit the annotation entirely if no GCP service account is required — an
+  # empty string annotation is written to the ServiceAccount but creates no
+  # Workload Identity binding and misleadingly implies one exists.
+  annotations: {}
 
 storageClassName: standard-rwo # pd-ssd backed dynamic provisioning on GKE
 

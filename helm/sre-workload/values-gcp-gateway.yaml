@@ -14,8 +14,9 @@
 # set gateway.className to the appropriate GKE GatewayClass (e.g. "gke-l7-global-external-managed").
 
 serviceAccount:
-  annotations:
-    iam.gke.io/gcp-service-account: ""
+  # Supply via --set serviceAccount.annotations."iam\.gke\.io/gcp-service-account"=<GSA_EMAIL>
+  # if the workload needs GCP API access. Omit if no service account is required.
+  annotations: {}
 
 storageClassName: standard-rwo
 

@@ -75,6 +75,12 @@ variable "node_desired_size" {
   default = 3
 }
 
+variable "install_cluster_autoscaler" {
+  description = "Install cluster-autoscaler and create its IRSA role. Default true for this env (new cluster with managed node groups). Set false if Karpenter or another autoscaler will be used instead — running both cluster-autoscaler and Karpenter concurrently causes them to fight over node count."
+  type        = bool
+  default     = true
+}
+
 variable "tags" {
   type = map(string)
   default = {

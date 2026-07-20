@@ -72,6 +72,24 @@ variable "deletion_protection" {
   default     = false
 }
 
+variable "maintenance_start_time" {
+  description = "RFC3339 timestamp for the start of the recurring maintenance window (e.g. '2024-01-01T02:00:00Z'). Controls when GKE auto-upgrades and node repairs are allowed to run."
+  type        = string
+  default     = "2024-01-01T02:00:00Z"
+}
+
+variable "maintenance_end_time" {
+  description = "RFC3339 timestamp for the end of the recurring maintenance window. Must be ≥ 4 hours after maintenance_start_time."
+  type        = string
+  default     = "2024-01-01T06:00:00Z"
+}
+
+variable "maintenance_recurrence" {
+  description = "RRULE string for how often the window repeats. Default restricts upgrades to weekends only, keeping weekday production traffic unaffected."
+  type        = string
+  default     = "FREQ=WEEKLY;BYDAY=SA,SU"
+}
+
 variable "create_kms_key" {
   description = "Provision a dedicated Cloud KMS key ring + key for GKE application-layer secrets encryption. Set false and pass kms_key_id to reuse an existing customer-managed key."
   type        = bool

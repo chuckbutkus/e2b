@@ -101,9 +101,10 @@ resource "kubectl_manifest" "node_pool" {
             name: default
       limits:
         cpu: "${var.cpu_limit}"
+        memory: "${var.memory_limit}"
       disruption:
         consolidationPolicy: ${var.consolidation_policy}
-        consolidateAfter: 30s
+        consolidateAfter: ${var.consolidate_after}
   YAML
 
   depends_on = [kubectl_manifest.ec2_node_class]

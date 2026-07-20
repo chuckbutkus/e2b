@@ -4,9 +4,12 @@
 #     --set ingress.host=sre.example.com
 
 serviceAccount:
-  annotations:
-    # Populated by Terraform output (modules/irsa) at deploy time.
-    eks.amazonaws.com/role-arn: ""
+  # Supply the IRSA role ARN at install time if the workload needs AWS API access:
+  #   --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=<IRSA_ROLE_ARN>
+  # Omit the annotation entirely if no IAM role is required — an empty string
+  # annotation is written to the ServiceAccount but creates no IAM binding and
+  # misleadingly implies one exists.
+  annotations: {}
 
 storageClassName: gp3
 

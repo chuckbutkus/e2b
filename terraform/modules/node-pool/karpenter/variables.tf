@@ -65,9 +65,27 @@ variable "cpu_limit" {
   default     = 1000
 }
 
+variable "memory_limit" {
+  description = "Total memory ceiling across everything this NodePool provisions (Kubernetes quantity string, e.g. '2000Gi', '2Ti'). A safety rail alongside the CPU limit."
+  type        = string
+  default     = "2000Gi"
+}
+
 variable "consolidation_policy" {
-  type    = string
-  default = "WhenEmptyOrUnderutilized"
+  description = "WhenEmpty consolidates only fully-empty nodes (no live pod eviction). WhenEmptyOrUnderutilized also evicts pods to bin-pack, which causes live-traffic churn on low-replica workloads. Default is WhenEmpty."
+  type        = string
+  default     = "WhenEmpty"
+
+  validation {
+    condition     = contains(["WhenEmpty", "WhenEmptyOrUnderutilized"], var.consolidation_policy)
+    error_message = "consolidation_policy must be WhenEmpty or WhenEmptyOrUnderutilized."
+  }
+}
+
+variable "consolidate_after" {
+  description = "How long a node must remain empty (WhenEmpty) or underutilized (WhenEmptyOrUnderutilized) before Karpenter consolidates it. Longer values reduce churn."
+  type        = string
+  default     = "5m"
 }
 
 variable "karpenter_chart_version" {

@@ -36,6 +36,7 @@ module "node_pool" {
 }
 
 module "cluster_autoscaler_irsa" {
+  count  = var.install_cluster_autoscaler ? 1 : 0
   source = "../../modules/irsa"
 
   role_name             = "${var.cluster_name}-cluster-autoscaler"
@@ -43,12 +44,14 @@ module "cluster_autoscaler_irsa" {
   oidc_issuer_url       = module.cluster.cluster_oidc_issuer_url
   namespace             = "kube-system"
   service_account_name  = "cluster-autoscaler"
-  policy_json           = data.aws_iam_policy_document.cluster_autoscaler.json
+  policy_json           = data.aws_iam_policy_document.cluster_autoscaler[0].json
   attach_inline_policy  = true
   tags                  = var.tags
 }
 
 data "aws_iam_policy_document" "cluster_autoscaler" {
+  count = var.install_cluster_autoscaler ? 1 : 0
+
   statement {
     effect = "Allow"
     actions = [
@@ -117,7 +120,11 @@ module "k8s_platform" {
 
   cluster_name                = module.cluster.cluster_name
   region                      = var.region
-  cluster_autoscaler_role_arn = module.cluster_autoscaler_irsa.role_arn
+  install_cluster_autoscaler  = var.install_cluster_autoscaler
+  # try() safely returns "" when the count-0 module has no index 0 —
+  # the k8s-platform precondition only fires when install_cluster_autoscaler
+  # is true, so the empty string is never actually validated in that case.
+  cluster_autoscaler_role_arn = try(module.cluster_autoscaler_irsa[0].role_arn, "")
 
   install_nginx_gateway_fabric = var.install_nginx_gateway_fabric
   acme_email                   = var.acme_email
