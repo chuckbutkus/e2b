@@ -38,6 +38,7 @@ spec:
       {{- end }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       {{- if .Values.topologySpread.enabled }}
       topologySpreadConstraints:
         - maxSkew: {{ .Values.topologySpread.maxSkew }}
@@ -75,6 +76,10 @@ spec:
             {{- include "sre-workload.probeSpec" (dict "probe" .Values.probes.liveness "root" . "path" .Values.probes.path) | nindent 12 }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep {{ .Values.lifecycle.preStopSleepSeconds }}"]
           {{- if .Values.securityContext.readOnlyRootFilesystem }}
           volumeMounts:
             - name: tmp

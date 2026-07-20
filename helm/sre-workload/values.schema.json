@@ -52,7 +52,12 @@
         "host": { "type": "string" }
       },
       "if": { "properties": { "enabled": { "const": true } } },
-      "then": { "required": ["host"] }
+      "then": {
+        "required": ["host"],
+        "properties": {
+          "host": { "type": "string", "minLength": 1 }
+        }
+      }
     },
     "gateway": {
       "type": "object",
@@ -80,7 +85,12 @@
         }
       },
       "if": { "properties": { "enabled": { "const": true } } },
-      "then": { "required": ["host"] }
+      "then": {
+        "required": ["host"],
+        "properties": {
+          "host": { "type": "string", "minLength": 1 }
+        }
+      }
     }
   }
 }

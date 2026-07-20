@@ -79,12 +79,22 @@ autoscaling:
 
 podDisruptionBudget:
   enabled: true
-  minAvailable: 1
+  minAvailable: 2  # guarantees ≥ 2 pods survive concurrent node drains; requires minReplicas ≥ 3
 
 rollout:
   strategy: RollingUpdate
   maxUnavailable: 0
   maxSurge: 25%
+
+# Must exceed lifecycle.preStopSleepSeconds so the container has time to
+# drain in-flight requests before the kubelet sends SIGTERM and then SIGKILL.
+terminationGracePeriodSeconds: 30
+
+lifecycle:
+  # Sleep in preStop gives kube-proxy/iptables time to finish propagating the
+  # endpoint removal before SIGTERM arrives, preventing connection resets on
+  # in-flight requests during rolling updates or node drains.
+  preStopSleepSeconds: 5
 
 topologySpread:
   enabled: true
@@ -179,7 +189,15 @@ gateway:
     issuerKind: ClusterIssuer
 
 serviceMonitor:
-  enabled: false # requires Prometheus Operator CRDs; opt-in only
+  # Disabled: two preconditions must hold before enabling.
+  # 1. The cluster must have Prometheus Operator CRDs installed.
+  # 2. The image must expose a real Prometheus /metrics endpoint. The confirmed
+  #    behaviour of the current image is that port 8080 is a catch-all returning
+  #    HTTP 200 for every path — a scrape of /metrics will succeed but return
+  #    zero metric families, creating a misleading "healthy scrape" in Prometheus.
+  #    If port 9090 turns out to be a metrics endpoint, add it as a named Service
+  #    port and point serviceMonitor.port at it before enabling.
+  enabled: false
   interval: 30s
   path: /metrics
 

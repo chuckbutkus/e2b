@@ -1,4 +1,5 @@
 data "aws_partition" "current" {}
+data "aws_caller_identity" "current" {}
 
 # --- IAM role + instance profile for nodes Karpenter launches directly ---
 # Distinct from modules/node-pool/aws-eks's node role: that role is for the
@@ -66,48 +67,105 @@ module "irsa" {
   tags                  = var.tags
 }
 
-# Deliberately broad (documented, not silently so) — this mirrors AWS's
-# own published Karpenter getting-started policy. Tightening this to
-# resource-level conditions (e.g. restricting ec2:RunInstances to specific
-# subnets/AMIs via tag-based conditions) is a reasonable hardening step
-# before a real production rollout; left broad here to match what's
-# actually been exercised/documented rather than presenting an untested
-# tightened policy as if it were verified.
 data "aws_iam_policy_document" "karpenter_controller" {
+  # Karpenter tags every resource it creates with karpenter.sh/discovery=<cluster>.
+  # Mutating actions are scoped to those tagged resources so the controller
+  # cannot touch EC2 resources belonging to other clusters or outside its purview.
+  # aws:RequestTag conditions cover resources being created; aws:ResourceTag
+  # conditions cover resources that already exist (termination, deletion).
   statement {
-    sid    = "AllowScopedEC2InstanceActions"
+    sid    = "AllowScopedEC2MutatingActions"
     effect = "Allow"
     actions = [
       "ec2:RunInstances",
-      "ec2:CreateTags",
-      "ec2:TerminateInstances",
       "ec2:CreateFleet",
       "ec2:CreateLaunchTemplate",
-      "ec2:DeleteLaunchTemplate",
-      "ec2:DescribeLaunchTemplates",
-      "ec2:DescribeInstances",
-      "ec2:DescribeInstanceTypes",
-      "ec2:DescribeInstanceTypeOfferings",
-      "ec2:DescribeAvailabilityZones",
-      "ec2:DescribeImages",
-      "ec2:DescribeSubnets",
-      "ec2:DescribeSecurityGroups",
-      "ec2:DescribeSpotPriceHistory",
     ]
-    resources = ["*"]
+    resources = [
+      "arn:${data.aws_partition.current.partition}:ec2:*:${data.aws_caller_identity.current.account_id}:fleet/*",
+      "arn:${data.aws_partition.current.partition}:ec2:*:${data.aws_caller_identity.current.account_id}:instance/*",
+      "arn:${data.aws_partition.current.partition}:ec2:*:${data.aws_caller_identity.current.account_id}:launch-template/*",
+      "arn:${data.aws_partition.current.partition}:ec2:*:${data.aws_caller_identity.current.account_id}:network-interface/*",
+      "arn:${data.aws_partition.current.partition}:ec2:*:${data.aws_caller_identity.current.account_id}:spot-instances-request/*",
+      "arn:${data.aws_partition.current.partition}:ec2:*:${data.aws_caller_identity.current.account_id}:volume/*",
+    ]
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestTag/karpenter.sh/discovery"
+      values   = [var.cluster_name]
+    }
   }
+
+  statement {
+    sid    = "AllowScopedEC2DeletionActions"
+    effect = "Allow"
+    actions = [
+      "ec2:TerminateInstances",
+      "ec2:DeleteLaunchTemplate",
+    ]
+    resources = [
+      "arn:${data.aws_partition.current.partition}:ec2:*:${data.aws_caller_identity.current.account_id}:instance/*",
+      "arn:${data.aws_partition.current.partition}:ec2:*:${data.aws_caller_identity.current.account_id}:launch-template/*",
+    ]
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/karpenter.sh/discovery"
+      values   = [var.cluster_name]
+    }
+  }
+
+  statement {
+    sid    = "AllowScopedEC2TaggingActions"
+    effect = "Allow"
+    actions = ["ec2:CreateTags"]
+    resources = [
+      "arn:${data.aws_partition.current.partition}:ec2:*:${data.aws_caller_identity.current.account_id}:fleet/*",
+      "arn:${data.aws_partition.current.partition}:ec2:*:${data.aws_caller_identity.current.account_id}:instance/*",
+      "arn:${data.aws_partition.current.partition}:ec2:*:${data.aws_caller_identity.current.account_id}:launch-template/*",
+      "arn:${data.aws_partition.current.partition}:ec2:*:${data.aws_caller_identity.current.account_id}:network-interface/*",
+      "arn:${data.aws_partition.current.partition}:ec2:*:${data.aws_caller_identity.current.account_id}:spot-instances-request/*",
+      "arn:${data.aws_partition.current.partition}:ec2:*:${data.aws_caller_identity.current.account_id}:volume/*",
+    ]
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestTag/karpenter.sh/discovery"
+      values   = [var.cluster_name]
+    }
+  }
+
   statement {
     sid    = "AllowPassingNodeRole"
     effect = "Allow"
     actions = ["iam:PassRole"]
     resources = [aws_iam_role.karpenter_node.arn]
   }
+
+  # EC2 Describe calls and SSM/pricing lookups do not support resource-level
+  # permissions — AWS requires "*" for these read-only operations regardless.
+  statement {
+    sid    = "AllowEC2ReadOnlyActions"
+    effect = "Allow"
+    actions = [
+      "ec2:DescribeAvailabilityZones",
+      "ec2:DescribeImages",
+      "ec2:DescribeInstances",
+      "ec2:DescribeInstanceTypeOfferings",
+      "ec2:DescribeInstanceTypes",
+      "ec2:DescribeLaunchTemplates",
+      "ec2:DescribeSecurityGroups",
+      "ec2:DescribeSpotPriceHistory",
+      "ec2:DescribeSubnets",
+    ]
+    resources = ["*"]
+  }
+
   statement {
     sid       = "AllowEKSDescribe"
     effect    = "Allow"
     actions   = ["eks:DescribeCluster"]
     resources = ["*"]
   }
+
   statement {
     sid    = "AllowInterruptionQueueActions"
     effect = "Allow"
@@ -118,10 +176,14 @@ data "aws_iam_policy_document" "karpenter_controller" {
     ]
     resources = [aws_sqs_queue.karpenter_interruption.arn]
   }
+
   statement {
-    sid       = "AllowPricingLookup"
-    effect    = "Allow"
-    actions   = ["pricing:GetProducts", "ssm:GetParameter"]
+    sid    = "AllowPricingAndSSMLookup"
+    effect = "Allow"
+    actions = [
+      "pricing:GetProducts",
+      "ssm:GetParameter",
+    ]
     resources = ["*"]
   }
 }

@@ -65,6 +65,17 @@ data "aws_iam_policy_document" "cluster_autoscaler" {
   }
 }
 
+resource "terraform_data" "assert_external_dns_zone_scoped" {
+  count = var.install_external_dns ? 1 : 0
+
+  lifecycle {
+    precondition {
+      condition     = var.external_dns_hosted_zone_id != ""
+      error_message = "install_external_dns is true but external_dns_hosted_zone_id is empty. Set the Route 53 hosted zone ID to prevent external-dns from gaining write access to all zones in the account."
+    }
+  }
+}
+
 module "external_dns_irsa" {
   count  = var.install_external_dns ? 1 : 0
   source = "../../modules/irsa"

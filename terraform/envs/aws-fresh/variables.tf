@@ -102,19 +102,19 @@ variable "karpenter_ami_family" {
 }
 
 variable "system_node_min_size" {
-  description = "Sizing for the system node group when enable_karpenter=true — only needs to run Karpenter + core add-ons, not workload pods."
+  description = "Sizing for the system node group when enable_karpenter=true — only needs to run Karpenter + core add-ons, not workload pods. Must be ≥ 2: Karpenter is a critical control-plane component and must not have a single node as a SPOF."
   type        = number
-  default     = 1
+  default     = 2
 }
 
 variable "system_node_max_size" {
   type    = number
-  default = 2
+  default = 3
 }
 
 variable "system_node_desired_size" {
   type    = number
-  default = 1
+  default = 2
 }
 
 variable "tags" {

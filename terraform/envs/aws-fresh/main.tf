@@ -99,6 +99,22 @@ data "aws_iam_policy_document" "cluster_autoscaler" {
 #   tags                 = var.tags
 # }
 
+# Fail the plan if external-dns is enabled without a specific zone ID.
+# Without this, the IAM policy falls back to hostedzone/* (all zones in the
+# account), giving external-dns write access to zones it has no business
+# touching. Enforced here rather than in the irsa module because only the
+# calling env knows the hosted-zone variable.
+resource "terraform_data" "assert_external_dns_zone_scoped" {
+  count = var.install_external_dns ? 1 : 0
+
+  lifecycle {
+    precondition {
+      condition     = var.external_dns_hosted_zone_id != ""
+      error_message = "install_external_dns is true but external_dns_hosted_zone_id is empty. Set the Route 53 hosted zone ID to prevent external-dns from gaining write access to all zones in the account."
+    }
+  }
+}
+
 module "external_dns_irsa" {
   count  = var.install_external_dns ? 1 : 0
   source = "../../modules/irsa"
