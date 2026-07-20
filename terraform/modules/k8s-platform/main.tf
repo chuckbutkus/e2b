@@ -70,16 +70,76 @@ resource "helm_release" "cluster_autoscaler" {
   ]
 }
 
+# --- NGINX Gateway Fabric ---------------------------------------------------
+# Alternative HTTP controller implementing the Kubernetes Gateway API
+# (GatewayClass / Gateway / HTTPRoute) instead of Ingress.
+# Disabled by default. Both NGF and ingress-nginx can coexist:
+# ingress-nginx handles existing Ingress resources and ACME HTTP-01 challenges
+# while workloads adopt HTTPRoute incrementally.
+#
+# The NGF chart includes the Gateway API standard-channel CRDs, so no
+# separate CRD install is required.
+
+resource "helm_release" "nginx_gateway_fabric" {
+  count            = var.install_nginx_gateway_fabric ? 1 : 0
+  name             = "ngf"
+  repository       = "oci://ghcr.io/nginx/charts"
+  chart            = "nginx-gateway-fabric"
+  namespace        = "nginx-gateway"
+  create_namespace = true
+  version          = var.nginx_gateway_fabric_chart_version
+  # wait=true ensures the GatewayClass CRD and the ngf GatewayClass itself
+  # are registered before any workload chart applies Gateway/HTTPRoute resources.
+  wait = true
+
+  set = [
+    {
+      name  = "service.type"
+      value = "LoadBalancer"
+    },
+  ]
+}
+
+# When NGF is the sole HTTP controller (install_ingress_nginx=false), cert-manager
+# cannot use the ingress HTTP-01 solver. Instead, a dedicated Gateway in the
+# nginx-gateway namespace serves ACME challenge requests via the
+# gatewayHTTPRoute solver. When ingress-nginx is also installed, this resource
+# is not created — the ingress solver handles challenges via ingress-nginx.
+resource "kubectl_manifest" "acme_gateway" {
+  count = var.install_nginx_gateway_fabric && !var.install_ingress_nginx ? 1 : 0
+
+  yaml_body = <<-YAML
+    apiVersion: gateway.networking.k8s.io/v1
+    kind: Gateway
+    metadata:
+      name: acme-gateway
+      namespace: nginx-gateway
+    spec:
+      gatewayClassName: nginx
+      listeners:
+        - name: http
+          port: 80
+          protocol: HTTP
+          allowedRoutes:
+            namespaces:
+              from: All
+  YAML
+
+  depends_on = [helm_release.nginx_gateway_fabric]
+}
+
 # --- cert-manager -----------------------------------------------------------
 # Installs the cert-manager controller and, when acme_email is provided,
 # creates two ClusterIssuers: letsencrypt-staging (for validating ACME
 # configuration without hitting rate limits) and letsencrypt-prod (for real
-# certificates). Both use the HTTP-01 challenge via ingress-nginx, which
-# works on both AWS and GCP without any cloud IAM.
+# certificates). The ACME HTTP-01 solver is selected based on which HTTP
+# controller is installed:
+#   install_ingress_nginx=true  → http01.ingress via ingress-nginx (default)
+#   install_ingress_nginx=false,
+#   install_nginx_gateway_fabric=true → http01.gatewayHTTPRoute via acme-gateway
 #
 # Disable (install_cert_manager = false) when the cluster already has
-# cert-manager, or when a non-ACME certificate strategy is used (corporate
-# CA, commercial CA, AWS ACM with ALB, etc.).
+# cert-manager, or when a non-ACME certificate strategy is used.
 
 resource "helm_release" "cert_manager" {
   count            = var.install_cert_manager ? 1 : 0
@@ -108,12 +168,34 @@ resource "helm_release" "cert_manager" {
 
 locals {
   create_cluster_issuers = var.install_cert_manager && var.acme_email != ""
+  # Use the Gateway API solver only when NGF is the sole HTTP controller.
+  # When ingress-nginx is also installed, the simpler ingress solver is used
+  # and the two controllers coexist without conflict.
+  use_gateway_acme_solver = var.install_nginx_gateway_fabric && !var.install_ingress_nginx
 }
 
 resource "kubectl_manifest" "cluster_issuer_staging" {
   count = local.create_cluster_issuers ? 1 : 0
 
-  yaml_body = <<-YAML
+  yaml_body = local.use_gateway_acme_solver ? <<-YAML
+    apiVersion: cert-manager.io/v1
+    kind: ClusterIssuer
+    metadata:
+      name: letsencrypt-staging
+    spec:
+      acme:
+        server: https://acme-staging-v02.api.letsencrypt.org/directory
+        email: ${var.acme_email}
+        privateKeySecretRef:
+          name: letsencrypt-staging-key
+        solvers:
+          - http01:
+              gatewayHTTPRoute:
+                parentRefs:
+                  - name: acme-gateway
+                    namespace: nginx-gateway
+                    kind: Gateway
+    YAML : <<-YAML
     apiVersion: cert-manager.io/v1
     kind: ClusterIssuer
     metadata:
@@ -128,15 +210,33 @@ resource "kubectl_manifest" "cluster_issuer_staging" {
           - http01:
               ingress:
                 ingressClassName: nginx
-  YAML
+    YAML
 
-  depends_on = [helm_release.cert_manager]
+  depends_on = [helm_release.cert_manager, helm_release.nginx_gateway_fabric, kubectl_manifest.acme_gateway]
 }
 
 resource "kubectl_manifest" "cluster_issuer_prod" {
   count = local.create_cluster_issuers ? 1 : 0
 
-  yaml_body = <<-YAML
+  yaml_body = local.use_gateway_acme_solver ? <<-YAML
+    apiVersion: cert-manager.io/v1
+    kind: ClusterIssuer
+    metadata:
+      name: letsencrypt-prod
+    spec:
+      acme:
+        server: https://acme-v02.api.letsencrypt.org/directory
+        email: ${var.acme_email}
+        privateKeySecretRef:
+          name: letsencrypt-prod-key
+        solvers:
+          - http01:
+              gatewayHTTPRoute:
+                parentRefs:
+                  - name: acme-gateway
+                    namespace: nginx-gateway
+                    kind: Gateway
+    YAML : <<-YAML
     apiVersion: cert-manager.io/v1
     kind: ClusterIssuer
     metadata:
@@ -151,9 +251,9 @@ resource "kubectl_manifest" "cluster_issuer_prod" {
           - http01:
               ingress:
                 ingressClassName: nginx
-  YAML
+    YAML
 
-  depends_on = [helm_release.cert_manager]
+  depends_on = [helm_release.cert_manager, helm_release.nginx_gateway_fabric, kubectl_manifest.acme_gateway]
 }
 
 # --- external-dns ------------------------------------------------------------

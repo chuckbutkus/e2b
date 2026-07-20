@@ -1,0 +1,36 @@
+# Overlay for AWS (EKS) using the Kubernetes Gateway API + NGINX Gateway Fabric.
+# Use instead of values-aws.yaml when install_nginx_gateway_fabric=true in Terraform.
+#
+# Apply with:
+#   helm install sre-workload . \
+#     -f values.yaml \
+#     -f values-aws-gateway.yaml \
+#     --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=<IRSA_ARN> \
+#     --set gateway.host=sre.example.com
+#
+# To coexist with ingress-nginx during migration, add -f values-aws.yaml before
+# this file and set ingress.enabled=false here explicitly.
+
+serviceAccount:
+  annotations:
+    eks.amazonaws.com/role-arn: ""
+
+storageClassName: gp3
+
+# Disable Ingress — Gateway API mode uses Gateway + HTTPRoute instead.
+ingress:
+  enabled: false
+
+gateway:
+  enabled: true
+  className: nginx   # GatewayClass created by NGINX Gateway Fabric
+  host: ""           # set via --set gateway.host=sre.example.com
+  createGateway: true
+  tls:
+    enabled: true
+    secretName: ""   # defaults to <fullname>-tls; cert-manager fills this
+    issuerName: letsencrypt-prod   # ClusterIssuer from modules/k8s-platform
+    issuerKind: ClusterIssuer
+
+nodeSelector:
+  kubernetes.io/os: linux

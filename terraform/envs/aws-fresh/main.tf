@@ -141,8 +141,9 @@ module "k8s_platform" {
   cluster_autoscaler_role_arn = module.cluster_autoscaler_irsa.role_arn
   install_cluster_autoscaler  = !var.enable_karpenter # Karpenter replaces it; running both fights over node count
 
-  acme_email           = var.acme_email
-  install_external_dns = var.install_external_dns
+  install_nginx_gateway_fabric = var.install_nginx_gateway_fabric
+  acme_email                   = var.acme_email
+  install_external_dns         = var.install_external_dns
   external_dns_service_account_annotations = var.install_external_dns ? {
     "eks.amazonaws.com/role-arn" = module.external_dns_irsa[0].role_arn
   } : {}

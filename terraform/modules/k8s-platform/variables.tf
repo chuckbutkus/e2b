@@ -27,6 +27,19 @@ variable "install_cluster_autoscaler" {
   default = true
 }
 
+# --- NGINX Gateway Fabric ---------------------------------------------------
+
+variable "install_nginx_gateway_fabric" {
+  description = "Install NGINX Gateway Fabric (NGF) and its Gateway API CRDs. NGF is an alternative to ingress-nginx for workloads that use HTTPRoute instead of Ingress resources. Both controllers can coexist, or ingress-nginx can be disabled once all workloads have migrated to HTTPRoute."
+  type        = bool
+  default     = false
+}
+
+variable "nginx_gateway_fabric_chart_version" {
+  type    = string
+  default = "1.6.1"
+}
+
 # --- cert-manager -----------------------------------------------------------
 
 variable "install_cert_manager" {

@@ -68,6 +68,11 @@ variable "acme_email" {
   default     = ""
 }
 
+variable "install_nginx_gateway_fabric" {
+  type    = bool
+  default = false
+}
+
 variable "install_external_dns" {
   type    = bool
   default = false

@@ -78,9 +78,10 @@ module "k8s_platform" {
   region                     = var.region
   install_cluster_autoscaler = false # GKE node-pool autoscaling is native
 
-  acme_email              = var.acme_email
-  install_external_dns    = var.install_external_dns
-  external_dns_provider   = "google"
+  install_nginx_gateway_fabric = var.install_nginx_gateway_fabric
+  acme_email                   = var.acme_email
+  install_external_dns         = var.install_external_dns
+  external_dns_provider        = "google"
   external_dns_google_project = var.project_id
   external_dns_service_account_annotations = var.install_external_dns ? {
     "iam.gke.io/gcp-service-account" = module.external_dns_wi[0].gsa_email

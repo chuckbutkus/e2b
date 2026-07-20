@@ -89,9 +89,10 @@ module "k8s_platform" {
   install_ingress_nginx       = var.install_ingress_nginx
   install_metrics_server      = var.install_metrics_server
 
-  install_cert_manager = var.install_cert_manager
-  acme_email           = var.acme_email
-  install_external_dns = var.install_external_dns
+  install_nginx_gateway_fabric = var.install_nginx_gateway_fabric
+  install_cert_manager         = var.install_cert_manager
+  acme_email                   = var.acme_email
+  install_external_dns         = var.install_external_dns
   external_dns_service_account_annotations = var.install_external_dns ? {
     "eks.amazonaws.com/role-arn" = module.external_dns_irsa[0].role_arn
   } : {}
