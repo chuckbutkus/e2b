@@ -59,3 +59,22 @@ variable "tags" {
     ManagedBy   = "terraform"
   }
 }
+
+# --- cert-manager / external-dns --------------------------------------------
+
+variable "acme_email" {
+  description = "Email for Let's Encrypt ACME registration. Leave empty to skip ClusterIssuer creation."
+  type        = string
+  default     = ""
+}
+
+variable "install_external_dns" {
+  type    = bool
+  default = false
+}
+
+variable "external_dns_hosted_zone_id" {
+  description = "Route 53 hosted zone ID to scope the external-dns IAM policy. Leave empty to allow all zones."
+  type        = string
+  default     = ""
+}

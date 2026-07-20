@@ -67,3 +67,17 @@ variable "tags" {
     managed-by  = "terraform"
   }
 }
+
+# --- cert-manager / external-dns --------------------------------------------
+
+variable "acme_email" {
+  description = "Email for Let's Encrypt ACME registration. Leave empty to skip ClusterIssuer creation."
+  type        = string
+  default     = ""
+}
+
+variable "install_external_dns" {
+  description = "Install external-dns and create a Workload Identity binding with Cloud DNS admin access. Disabled by default."
+  type        = bool
+  default     = false
+}
