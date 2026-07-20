@@ -312,11 +312,13 @@ resource "helm_release" "external_dns" {
   create_namespace = true
   version          = var.external_dns_chart_version
 
-  dynamic "set" {
-    for_each = local.external_dns_set_values
-    content {
-      name  = set.key
-      value = set.value
+  # Helm provider v3 changed `set` from a repeatable block to a list
+  # attribute — dynamic "set" {} is not valid. Convert the map to a list
+  # of {name, value} objects with a for expression instead.
+  set = [
+    for k, v in local.external_dns_set_values : {
+      name  = k
+      value = v
     }
-  }
+  ]
 }
