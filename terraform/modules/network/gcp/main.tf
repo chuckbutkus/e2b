@@ -30,6 +30,19 @@ resource "google_compute_subnetwork" "this" {
                                     # reach Google APIs (GCR/Artifact
                                     # Registry, etc.) — required for a
                                     # private-nodes GKE cluster to function
+
+  # VPC Flow Logs: capture sampled traffic metadata for forensics and
+  # compliance. GCP samples at flow_logs_sampling_rate (50% default) so
+  # cost is low; INCLUDE_ALL_METADATA provides src/dst IP, port, and
+  # protocol without requiring separate packet capture.
+  dynamic "log_config" {
+    for_each = var.enable_flow_logs ? [1] : []
+    content {
+      aggregation_interval = "INTERVAL_5_SEC"
+      flow_sampling        = var.flow_logs_sampling_rate
+      metadata             = "INCLUDE_ALL_METADATA"
+    }
+  }
 }
 
 # Cloud NAT — GKE nodes here have no external IPs (private nodes), so

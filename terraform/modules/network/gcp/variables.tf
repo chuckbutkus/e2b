@@ -29,6 +29,18 @@ variable "services_cidr" {
   default     = "10.8.0.0/20"
 }
 
+variable "enable_flow_logs" {
+  description = "Enable VPC Flow Logs on the GKE node subnet. Captures traffic metadata for forensics and compliance. Enabled by default — GCP flow logs are sampled (50% by default) so cost impact is low."
+  type        = bool
+  default     = true
+}
+
+variable "flow_logs_sampling_rate" {
+  description = "Fraction of packets to sample for flow logs (0.0–1.0). 0.5 (50%) is the GCP-recommended production default; lower if log volume becomes a cost concern."
+  type        = number
+  default     = 0.5
+}
+
 variable "tags" {
   description = "Labels applied to created resources (GCP calls these 'labels', kept as 'tags' for naming parity with the AWS modules)."
   type        = map(string)

@@ -67,3 +67,9 @@ variable "kms_key_deletion_window" {
   type        = number
   default     = 30
 }
+
+variable "log_retention_days" {
+  description = "CloudWatch log retention for EKS control-plane logs in days. Compliance baselines commonly require ≥365. The log group is encrypted with the same CMK as EKS secrets."
+  type        = number
+  default     = 365
+}

@@ -1,5 +1,6 @@
 data "aws_partition" "current" {}
 data "aws_caller_identity" "current" {}
+data "aws_region" "current" {}
 
 # --- Secrets envelope encryption --------------------------------------------
 # EKS does not encrypt Kubernetes Secrets at rest with a customer-managed
@@ -41,6 +42,28 @@ resource "aws_kms_key" "eks_secrets" {
           "kms:CreateGrant",
         ]
         Resource = "*"
+      },
+      {
+        # CloudWatch Logs must be able to encrypt/decrypt log events for the
+        # control-plane log group. Scoped to the exact log group ARN via the
+        # kms:EncryptionContext condition so the grant cannot be used for any
+        # other log group in the account.
+        Sid       = "AllowCloudWatchLogsToUseKey"
+        Effect    = "Allow"
+        Principal = { Service = "logs.${data.aws_region.current.name}.amazonaws.com" }
+        Action = [
+          "kms:Encrypt",
+          "kms:Decrypt",
+          "kms:ReEncrypt*",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey",
+        ]
+        Resource = "*"
+        Condition = {
+          ArnLike = {
+            "kms:EncryptionContext:aws:logs:arn" = "arn:${data.aws_partition.current.partition}:logs:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:log-group:/aws/eks/${var.cluster_name}/cluster"
+          }
+        }
       }
     ]
   })
@@ -85,7 +108,8 @@ resource "aws_iam_role_policy_attachment" "cluster_policy" {
 # shell access to.
 resource "aws_cloudwatch_log_group" "cluster" {
   name              = "/aws/eks/${var.cluster_name}/cluster"
-  retention_in_days = 90
+  retention_in_days = var.log_retention_days
+  kms_key_id        = local.kms_key_arn
   tags              = var.tags
 }
 
