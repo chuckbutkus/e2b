@@ -1,8 +1,8 @@
-# AWS Fresh Install вҖ” Resource Reference
+# AWS Fresh Install - Resource Reference
 
 **Environment**: `terraform/envs/aws-fresh`
 
-This document describes every resource created by each Terraform module in the fresh AWS install path, what each resource does, and why it matters. Modules are documented in dependency order вҖ” each section's outputs become the next section's inputs.
+This document describes every resource created by each Terraform module in the fresh AWS install path, what each resource does, and why it matters. Modules are documented in dependency order - each section's outputs become the next section's inputs.
 
 ---
 
@@ -16,55 +16,73 @@ This module builds everything that has to exist before an EKS cluster can be cre
 
 ### Resource inventory
 
-With the default configuration in `envs/aws-fresh` вҖ” three availability zones, `single_nat_gateway = false` вҖ” the module creates 27 AWS resources:
+With the default configuration in `envs/aws-fresh` - three availability zones, `single_nat_gateway = false` - the module creates 27 AWS resources:
 
-| Resource type | Count | Names (defaults) |
-|---|---|---|
-| `aws_vpc` | 1 | `e2b-sre-fresh` |
-| `aws_internet_gateway` | 1 | `e2b-sre-fresh-igw` |
-| `aws_subnet` (public) | 3 | `e2b-sre-fresh-public-us-east-1{a,b,c}` |
-| `aws_subnet` (private) | 3 | `e2b-sre-fresh-private-us-east-1{a,b,c}` |
-| `aws_eip` | 3 | `e2b-sre-fresh-nat-eip-{0,1,2}` |
-| `aws_nat_gateway` | 3 | `e2b-sre-fresh-nat-{0,1,2}` |
-| `aws_route_table` (public) | 1 | `e2b-sre-fresh-public-rt` |
-| `aws_route` (public internet) | 1 | *(default route вҶ’ IGW)* |
-| `aws_route_table_association` (public) | 3 | *(one per public subnet)* |
-| `aws_route_table` (private) | 3 | `e2b-sre-fresh-private-rt-us-east-1{a,b,c}` |
-| `aws_route` (private NAT) | 3 | *(one default route per private RT вҶ’ local NAT GW)* |
-| `aws_route_table_association` (private) | 3 | *(one per private subnet)* |
-| `aws_iam_role` (flow logs) | 1 | `e2b-sre-fresh-vpc-flow-logs` |
-| `aws_iam_role_policy` (flow logs) | 1 | `e2b-sre-fresh-vpc-flow-logs` |
-| `aws_cloudwatch_log_group` (flow logs) | 1 | `/aws/vpc/flow-logs/e2b-sre-fresh` |
-| `aws_flow_log` | 1 | `e2b-sre-fresh-flow-logs` |
-| `aws_default_security_group` | 1 | `e2b-sre-fresh-default-sg-locked` |
+| Resource type                           | Count | Names (defaults)                                     |
+| --------------------------------------- | ----- | ---------------------------------------------------- |
+| `aws_vpc`                               | 1     | `e2b-sre-fresh`                                      |
+| `aws_internet_gateway`                  | 1     | `e2b-sre-fresh-igw`                                  |
+| `aws_subnet` (public)                   | 3     | `e2b-sre-fresh-public-us-east-1{a,b,c}`              |
+| `aws_subnet` (private)                  | 3     | `e2b-sre-fresh-private-us-east-1{a,b,c}`             |
+| `aws_eip`                               | 3     | `e2b-sre-fresh-nat-eip-{0,1,2}`                      |
+| `aws_nat_gateway`                       | 3     | `e2b-sre-fresh-nat-{0,1,2}`                          |
+| `aws_route_table` (public)              | 1     | `e2b-sre-fresh-public-rt`                            |
+| `aws_route` (public internet)           | 1     | _(default route -> IGW)_                             |
+| `aws_route_table_association` (public)  | 3     | _(one per public subnet)_                            |
+| `aws_route_table` (private)             | 3     | `e2b-sre-fresh-private-rt-us-east-1{a,b,c}`          |
+| `aws_route` (private NAT)               | 3     | _(one default route per private RT -> local NAT GW)_ |
+| `aws_route_table_association` (private) | 3     | _(one per private subnet)_                           |
+| `aws_iam_role` (flow logs)              | 1     | `e2b-sre-fresh-vpc-flow-logs`                        |
+| `aws_iam_role_policy` (flow logs)       | 1     | `e2b-sre-fresh-vpc-flow-logs`                        |
+| `aws_cloudwatch_log_group` (flow logs)  | 1     | `/aws/vpc/flow-logs/e2b-sre-fresh`                   |
+| `aws_flow_log`                          | 1     | `e2b-sre-fresh-flow-logs`                            |
+| `aws_default_security_group`            | 1     | `e2b-sre-fresh-default-sg-locked`                    |
 
 ---
 
 ### Network topology
 
-```
-                         Internet
-                            в”Ӯ
-                 в”Ңв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв–јв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”җ
-                 в”Ӯ   Internet Gateway  в”Ӯ
-                 в”Ӯ   e2b-sre-fresh-igw в”Ӯ
-                 в””в”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”¬в”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”ҳ
-                            в”Ӯ
-          в”Ңв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”јв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”җ
-          в”Ӯ                 в”Ӯ                 в”Ӯ
-в”Ңв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв–јв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”җ в”Ңв”Җв”Җв”Җв”Җв”Җв”Җв–јв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”җ в”Ңв”Җв”Җв”Җв”Җв”Җв”Җв–јв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”җ
-в”Ӯ  Public Subnet   в”Ӯ в”ӮPublic Subnet в”Ӯ в”ӮPublic Subnet в”Ӯ
-в”Ӯ  us-east-1a      в”Ӯ в”Ӯus-east-1b    в”Ӯ в”Ӯus-east-1c    в”Ӯ
-в”Ӯ  10.0.128.0/20   в”Ӯ в”Ӯ10.0.144.0/20 в”Ӯ в”Ӯ10.0.160.0/20 в”Ӯ
-в”Ӯ  [NAT GW + EIP]  в”Ӯ в”Ӯ[NAT GW + EIP]в”Ӯ в”Ӯ[NAT GW + EIP]в”Ӯ
-в””в”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”¬в”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”ҳ в””в”Җв”Җв”Җв”Җв”Җв”Җв”¬в”Җв”Җв”Җв”Җв”Җв”Җв”Җв”ҳ в””в”Җв”Җв”Җв”Җв”Җв”Җв”¬в”Җв”Җв”Җв”Җв”Җв”Җв”Җв”ҳ
-          в”Ӯ  (outbound only)в”Ӯ                 в”Ӯ
-в”Ңв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв–јв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”җ в”Ңв”Җв”Җв”Җв”Җв”Җв”Җв–јв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”җ в”Ңв”Җв”Җв”Җв”Җв”Җв”Җв–јв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”җ
-в”Ӯ  Private Subnet  в”Ӯ в”ӮPrivate Subnetв”Ӯ в”ӮPrivate Subnetв”Ӯ
-в”Ӯ  us-east-1a      в”Ӯ в”Ӯus-east-1b    в”Ӯ в”Ӯus-east-1c    в”Ӯ
-в”Ӯ  10.0.0.0/20     в”Ӯ в”Ӯ10.0.16.0/20  в”Ӯ в”Ӯ10.0.32.0/20  в”Ӯ
-в”Ӯ  [EKS nodes]     в”Ӯ в”Ӯ[EKS nodes]   в”Ӯ в”Ӯ[EKS nodes]   в”Ӯ
-в””в”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”ҳ в””в”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”ҳ в””в”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”Җв”ҳ
+```mermaid
+flowchart TB
+
+    Internet((Internet))
+    IGW["Internet Gateway<br/>e2b-sre-fresh-igw"]
+
+    Internet --> IGW
+
+    subgraph VPC["VPC 10.0.0.0/16"]
+
+        subgraph AZA["Availability Zone us-east-1a"]
+            PUBA["Public Subnet<br/>10.0.128.0/20"]
+            NATA["NAT Gateway + EIP"]
+            PRIA["Private Subnet<br/>10.0.0.0/20<br/>EKS Worker Nodes"]
+
+            PUBA --> NATA
+            PRIA -. Default Route .-> NATA
+        end
+
+        subgraph AZB["Availability Zone us-east-1b"]
+            PUBB["Public Subnet<br/>10.0.144.0/20"]
+            NATB["NAT Gateway + EIP"]
+            PRIB["Private Subnet<br/>10.0.16.0/20<br/>EKS Worker Nodes"]
+
+            PUBB --> NATB
+            PRIB -. Default Route .-> NATB
+        end
+
+        subgraph AZC["Availability Zone us-east-1c"]
+            PUBC["Public Subnet<br/>10.0.160.0/20"]
+            NATC["NAT Gateway + EIP"]
+            PRIC["Private Subnet<br/>10.0.32.0/20<br/>EKS Worker Nodes"]
+
+            PUBC --> NATC
+            PRIC -. Default Route .-> NATC
+        end
+    end
+
+    IGW --> PUBA
+    IGW --> PUBB
+    IGW --> PUBC
 ```
 
 Traffic can enter the private subnets from the internet only through a load balancer sitting in a public subnet. Nodes in the private subnets can initiate outbound connections (to pull container images, call AWS APIs, etc.) through the NAT gateway in the same AZ, but nothing on the internet can reach a node directly.
@@ -81,7 +99,7 @@ enable_dns_support:   true
 enable_dns_hostnames: true
 ```
 
-The VPC is the private network boundary for the entire deployment. Everything вҖ” EKS control plane ENIs, worker nodes, load balancers вҖ” lives inside it.
+The VPC is the private network boundary for the entire deployment. Everything - EKS control plane ENIs, worker nodes, load balancers - lives inside it.
 
 The `/16` block is large enough to carve out multiple `/20` subnets (4,096 addresses each) per tier per AZ without address space running short. The default layout uses only a fraction:
 
@@ -89,14 +107,14 @@ The `/16` block is large enough to carve out multiple `/20` subnets (4,096 addre
 10.0.0.0/20    private, us-east-1a   (4,094 usable)
 10.0.16.0/20   private, us-east-1b
 10.0.32.0/20   private, us-east-1c
-...            (10.0.48.0 вҖ“ 10.0.127.255 unallocated, available for future use)
+...            (10.0.48.0 - 10.0.127.255 unallocated, available for future use)
 10.0.128.0/20  public,  us-east-1a
 10.0.144.0/20  public,  us-east-1b
 10.0.160.0/20  public,  us-east-1c
-...            (10.0.176.0 вҖ“ 10.0.255.255 unallocated)
+...            (10.0.176.0 - 10.0.255.255 unallocated)
 ```
 
-**`enable_dns_support = true`** turns on the Route 53 Resolver inside the VPC. Without it, hostnames don't resolve at all вҖ” pods couldn't reach `s3.amazonaws.com`, AWS service endpoints, or each other by DNS name.
+**`enable_dns_support = true`** turns on the Route 53 Resolver inside the VPC. Without it, hostnames don't resolve at all - pods couldn't reach `s3.amazonaws.com`, AWS service endpoints, or each other by DNS name.
 
 **`enable_dns_hostnames = true`** gives EC2 instances public DNS hostnames (e.g. `ec2-54-x-x-x.compute-1.amazonaws.com`). For EKS specifically this also enables VPC DNS resolution for the cluster API endpoint, which is how `kubectl` and the kubelet both reach the control plane. EKS will refuse to create the cluster if this flag is off.
 
@@ -108,7 +126,7 @@ The `/16` block is large enough to carve out multiple `/20` subnets (4,096 addre
 attached to: aws_vpc.this
 ```
 
-An Internet Gateway is the single point through which a VPC exchanges traffic with the public internet. It performs no address translation вҖ” it maps public Elastic IPs to private addresses and passes packets between them.
+An Internet Gateway is the single point through which a VPC exchanges traffic with the public internet. It performs no address translation - it maps public Elastic IPs to private addresses and passes packets between them.
 
 The IGW is required even in a deployment where worker nodes are entirely private. It serves two purposes here:
 
@@ -119,7 +137,7 @@ The `depends_on = [aws_internet_gateway.this]` on the NAT gateway resource enfor
 
 ---
 
-#### Public Subnets (`aws_subnet.public`, Г—3)
+#### Public Subnets (`aws_subnet.public`, x3)
 
 ```
 count:                    3  (one per AZ)
@@ -147,7 +165,7 @@ These tags are required for internet-facing load balancers to work. The AWS Load
 
 ---
 
-#### Private Subnets (`aws_subnet.private`, Г—3)
+#### Private Subnets (`aws_subnet.private`, x3)
 
 ```
 count:                    3  (one per AZ)
@@ -156,7 +174,7 @@ cidr_blocks:              10.0.0.0/20, 10.0.16.0/20, 10.0.32.0/20
 map_public_ip_on_launch:  false  (the default; not set explicitly)
 ```
 
-Private subnets are where all EKS worker nodes run. Nodes here have no public IP address and are unreachable from the internet directly вҖ” the only inbound path is through a load balancer in a public subnet. Outbound traffic (pulling images, calling AWS APIs) goes through the NAT gateway in the same AZ.
+Private subnets are where all EKS worker nodes run. Nodes here have no public IP address and are unreachable from the internet directly - the only inbound path is through a load balancer in a public subnet. Outbound traffic (pulling images, calling AWS APIs) goes through the NAT gateway in the same AZ.
 
 Keeping nodes private is the standard EKS security posture. A node with a public IP is a direct attack surface; a node behind a NAT gateway is not. Even with restrictive security groups, the defence-in-depth principle strongly favours private nodes.
 
@@ -167,13 +185,13 @@ kubernetes.io/role/internal-elb       = "1"
 kubernetes.io/cluster/e2b-sre-fresh   = "shared"
 ```
 
-The `kubernetes.io/role/internal-elb = 1` tag serves the same role as the public subnet's `elb` tag, but for *internal* load balancers. When a Kubernetes Service of type `LoadBalancer` is created with the `internal: true` annotation (or when the ingress controller is configured for internal routing), the AWS Load Balancer Controller looks for subnets tagged with `internal-elb` to place the NLB. EKS also reads this tag when it needs to create control-plane ENIs in the VPC.
+The `kubernetes.io/role/internal-elb = 1` tag serves the same role as the public subnet's `elb` tag, but for _internal_ load balancers. When a Kubernetes Service of type `LoadBalancer` is created with the `internal: true` annotation (or when the ingress controller is configured for internal routing), the AWS Load Balancer Controller looks for subnets tagged with `internal-elb` to place the NLB. EKS also reads this tag when it needs to create control-plane ENIs in the VPC.
 
-The `modules/network/existing` module вҖ” used when a customer brings their own VPC вҖ” validates that these tags are present on the supplied subnets before the plan proceeds, producing a clear error rather than a silent failure minutes later during cluster creation.
+The `modules/network/existing` module - used when a customer brings their own VPC - validates that these tags are present on the supplied subnets before the plan proceeds, producing a clear error rather than a silent failure minutes later during cluster creation.
 
 ---
 
-#### Elastic IPs (`aws_eip`, Г—3)
+#### Elastic IPs (`aws_eip`, x3)
 
 ```
 count:   3  (one per AZ, because single_nat_gateway = false)
@@ -184,11 +202,11 @@ An Elastic IP is a static public IPv4 address in your AWS account. NAT gateways 
 
 The practical significance of a static IP is that it can be added to external allowlists. If the workload calls a third-party API that restricts access by IP, the customer gives the vendor the EIP addresses (one per AZ, three in this configuration) once, and the list never changes even when nodes are replaced or autoscaled.
 
-EIPs are created separately from NAT gateways (`aws_eip` вҶ’ `aws_nat_gateway` via `allocation_id`) because AWS bills for them independently and their lifecycle is separate: if a NAT gateway is destroyed and recreated, the EIP address can be preserved.
+EIPs are created separately from NAT gateways (`aws_eip` -> `aws_nat_gateway` via `allocation_id`) because AWS bills for them independently and their lifecycle is separate: if a NAT gateway is destroyed and recreated, the EIP address can be preserved.
 
 ---
 
-#### NAT Gateways (`aws_nat_gateway`, Г—3)
+#### NAT Gateways (`aws_nat_gateway`, x3)
 
 ```
 count:          3  (one per AZ, because single_nat_gateway = false)
@@ -199,13 +217,14 @@ allocation_id:  bound to the matching aws_eip
 A NAT (Network Address Translation) gateway lets resources in a private subnet initiate outbound connections to the internet while remaining unreachable from it. It replaces the source IP of the outgoing packet with the Elastic IP, forwards the packet out through the Internet Gateway, and reverses the translation for the reply.
 
 **Why nodes need this.** EKS worker nodes must be able to reach:
+
 - AWS APIs (EC2, ECR, S3, CloudWatch, STS) to register with the cluster and report metrics.
 - Container image registries (ghcr.io, docker.io, ECR) to pull workload images.
 - Any external dependencies the workload itself calls.
 
-None of this is possible from a private subnet without a NAT gateway (or VPC endpoints as an alternative вҖ” see note below).
+None of this is possible from a private subnet without a NAT gateway (or VPC endpoints as an alternative - see note below).
 
-**Why one per AZ, not one shared.** A NAT gateway is an Availability Zone-scoped resource. It is not replicated across AZs. If `us-east-1a` suffers a partial outage and the single NAT gateway happens to be there, every private subnet in every AZ loses outbound internet access simultaneously вҖ” the cluster's nodes can no longer reach ECR or AWS APIs, new pod scheduling stalls, and the workload degrades across all AZs, not just the affected one.
+**Why one per AZ, not one shared.** A NAT gateway is an Availability Zone-scoped resource. It is not replicated across AZs. If `us-east-1a` suffers a partial outage and the single NAT gateway happens to be there, every private subnet in every AZ loses outbound internet access simultaneously - the cluster's nodes can no longer reach ECR or AWS APIs, new pod scheduling stalls, and the workload degrades across all AZs, not just the affected one.
 
 With one NAT gateway per AZ, an AZ-level event affects only the nodes in that AZ. The nodes in `us-east-1b` and `us-east-1c` continue routing through their own gateways, unaffected. This is why `single_nat_gateway = false` is the production default, even though it triples the NAT gateway cost (~$0.045/hour per gateway, plus data processing charges).
 
@@ -219,20 +238,20 @@ With one NAT gateway per AZ, an AZ-level event affects only the nodes in that AZ
 
 ```
 aws_route_table.public         (1 table, shared by all 3 public subnets)
-aws_route.public_internet      destination 0.0.0.0/0  вҶ’  Internet Gateway
+aws_route.public_internet      destination 0.0.0.0/0  ->  Internet Gateway
 aws_route_table_association    (3 associations, one per public subnet)
 ```
 
 A route table is the routing policy attached to a subnet. All three public subnets share a single route table because their routing is identical: local VPC traffic stays local, everything else goes to the Internet Gateway.
 
-| Destination | Target | Added by |
-|---|---|---|
-| `10.0.0.0/16` | local | AWS (automatic, always present) |
-| `0.0.0.0/0` | `igw-...` | `aws_route.public_internet` |
+| Destination   | Target    | Added by                        |
+| ------------- | --------- | ------------------------------- |
+| `10.0.0.0/16` | local     | AWS (automatic, always present) |
+| `0.0.0.0/0`   | `igw-...` | `aws_route.public_internet`     |
 
-The local route (`10.0.0.0/16 вҶ’ local`) is injected automatically by AWS and cannot be deleted. It ensures that traffic destined for any address inside the VPC stays inside the VPC rather than being sent out through the IGW.
+The local route (`10.0.0.0/16 -> local`) is injected automatically by AWS and cannot be deleted. It ensures that traffic destined for any address inside the VPC stays inside the VPC rather than being sent out through the IGW.
 
-The default route (`0.0.0.0/0 вҶ’ IGW`) makes a subnet "public": any traffic that doesn't match a more specific route is forwarded to the Internet Gateway. Resources in a public subnet can initiate and receive internet connections through it.
+The default route (`0.0.0.0/0 -> IGW`) makes a subnet "public": any traffic that doesn't match a more specific route is forwarded to the Internet Gateway. Resources in a public subnet can initiate and receive internet connections through it.
 
 ---
 
@@ -240,20 +259,20 @@ The default route (`0.0.0.0/0 вҶ’ IGW`) makes a subnet "public": any traffic
 
 ```
 aws_route_table.private        (3 tables, one per AZ)
-aws_route.private_nat          destination 0.0.0.0/0  вҶ’  NAT Gateway (per-AZ)
+aws_route.private_nat          destination 0.0.0.0/0  ->  NAT Gateway (per-AZ)
 aws_route_table_association    (3 associations, one per private subnet)
 ```
 
 Each private subnet gets its own route table rather than sharing one, so each can route outbound traffic to the NAT gateway in its own AZ.
 
-| Destination | Target | Added by |
-|---|---|---|
-| `10.0.0.0/16` | local | AWS (automatic) |
-| `0.0.0.0/0` | `nat-...` (same AZ) | `aws_route.private_nat` |
+| Destination   | Target              | Added by                |
+| ------------- | ------------------- | ----------------------- |
+| `10.0.0.0/16` | local               | AWS (automatic)         |
+| `0.0.0.0/0`   | `nat-...` (same AZ) | `aws_route.private_nat` |
 
 **Why per-AZ route tables matter.** If all three private subnets shared one route table pointing to a single NAT gateway, traffic from a node in `us-east-1b` to the internet would travel cross-AZ to reach the gateway in `us-east-1a`, incur cross-AZ data transfer charges, and add latency. More importantly, it reintroduces the single-NAT-gateway failure mode at the routing level even if three NAT gateways exist. Per-AZ route tables ensure each subnet's traffic stays within the AZ for as long as possible before exiting.
 
-When `single_nat_gateway = true`, all three private route tables are created but each points to the single shared NAT gateway вҖ” the structure is the same, only the target changes.
+When `single_nat_gateway = true`, all three private route tables are created but each points to the single shared NAT gateway - the structure is the same, only the target changes.
 
 #### VPC Flow Logs (`aws_iam_role.flow_logs`, `aws_iam_role_policy.flow_logs`, `aws_cloudwatch_log_group.flow_logs`, `aws_flow_log.this`)
 
@@ -292,33 +311,32 @@ Every AWS VPC ships with a default security group that cannot be deleted. Its de
 
 This satisfies the CKV2_AWS_12 control in most Terraform security scanners (Checkov, tfsec). It has no impact on any resource that uses an explicitly declared security group, which every resource in this deployment does.
 
-
 ---
 
 ### Module outputs
 
 ```hcl
-vpc_id             вҶ’ consumed by modules/cluster/aws-eks (vpc_config block)
-private_subnet_ids вҶ’ consumed by modules/cluster/aws-eks (control-plane ENIs)
+vpc_id             -> consumed by modules/cluster/aws-eks (vpc_config block)
+private_subnet_ids -> consumed by modules/cluster/aws-eks (control-plane ENIs)
                      and modules/node-pool/aws-eks (node launch subnets)
-public_subnet_ids  вҶ’ available for load balancer subnet references
-azs                вҶ’ available for downstream AZ-aware resources
+public_subnet_ids  -> available for load balancer subnet references
+azs                -> available for downstream AZ-aware resources
 ```
 
-The output contract (`vpc_id`, `private_subnet_ids`, `public_subnet_ids`, `azs`) is identical to the one exposed by `modules/network/existing`, which looks up a customer's pre-existing VPC instead of creating one. The `envs/` root modules compose against this shape regardless of which implementation is behind it вҖ” swapping from fresh to existing is a one-line source change with no downstream edits required.
+The output contract (`vpc_id`, `private_subnet_ids`, `public_subnet_ids`, `azs`) is identical to the one exposed by `modules/network/existing`, which looks up a customer's pre-existing VPC instead of creating one. The `envs/` root modules compose against this shape regardless of which implementation is behind it - swapping from fresh to existing is a one-line source change with no downstream edits required.
 
 ---
 
 ### What happens if this module is misconfigured
 
-| Misconfiguration | Failure mode |
-|---|---|
-| `enable_dns_hostnames = false` | EKS cluster creation rejected; kubelet can't resolve the API endpoint |
-| Missing `kubernetes.io/role/internal-elb` tag on private subnets | Internal load balancers silently fail to provision; Service stays in `Pending` |
-| Missing `kubernetes.io/role/elb` tag on public subnets | Internet-facing load balancers fail; ingress controller errors |
-| Single NAT gateway in production | AZ outage kills all outbound internet access across the cluster |
-| Private subnets in fewer than 2 AZs | Terraform validation error before any resources are created (enforced by `var.azs` validation block) |
-| Private subnets in only 1 AZ | EKS API rejects the cluster; EKS requires control-plane ENIs in at least 2 AZs |
+| Misconfiguration                                                 | Failure mode                                                                                         |
+| ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `enable_dns_hostnames = false`                                   | EKS cluster creation rejected; kubelet can't resolve the API endpoint                                |
+| Missing `kubernetes.io/role/internal-elb` tag on private subnets | Internal load balancers silently fail to provision; Service stays in `Pending`                       |
+| Missing `kubernetes.io/role/elb` tag on public subnets           | Internet-facing load balancers fail; ingress controller errors                                       |
+| Single NAT gateway in production                                 | AZ outage kills all outbound internet access across the cluster                                      |
+| Private subnets in fewer than 2 AZs                              | Terraform validation error before any resources are created (enforced by `var.azs` validation block) |
+| Private subnets in only 1 AZ                                     | EKS API rejects the cluster; EKS requires control-plane ENIs in at least 2 AZs                       |
 
 ---
 
@@ -331,13 +349,13 @@ This module creates the EKS control plane and every piece of IAM and logging inf
 
 ### Resource inventory
 
-| Resource type | Count | Name (default) |
-|---|---|---|
-| `aws_iam_role` | 1 | `e2b-sre-fresh-eks-cluster` |
-| `aws_iam_role_policy_attachment` | 1 | *(attaches `AmazonEKSClusterPolicy`)* |
-| `aws_cloudwatch_log_group` | 1 | `/aws/eks/e2b-sre-fresh/cluster` |
-| `aws_eks_cluster` | 1 | `e2b-sre-fresh` |
-| `aws_iam_openid_connect_provider` | 1 | *(OIDC issuer URL as the identifier)* |
+| Resource type                     | Count | Name (default)                        |
+| --------------------------------- | ----- | ------------------------------------- |
+| `aws_iam_role`                    | 1     | `e2b-sre-fresh-eks-cluster`           |
+| `aws_iam_role_policy_attachment`  | 1     | _(attaches `AmazonEKSClusterPolicy`)_ |
+| `aws_cloudwatch_log_group`        | 1     | `/aws/eks/e2b-sre-fresh/cluster`      |
+| `aws_eks_cluster`                 | 1     | `e2b-sre-fresh`                       |
+| `aws_iam_openid_connect_provider` | 1     | _(OIDC issuer URL as the identifier)_ |
 
 The module also uses two **data sources** that do not create resources but are required for correct resource configuration: `data.aws_partition.current` and `data.tls_certificate.eks`.
 
@@ -393,13 +411,13 @@ The name `/aws/eks/<cluster-name>/cluster` is the path EKS expects. Using any ot
 
 **The five log types** set in `enabled_cluster_log_types`:
 
-| Log type | What it captures | Primary use |
-|---|---|---|
-| `api` | Every request to the API server: method, path, response code, latency | Traffic volume analysis, detecting unexpected API clients, rate-limit debugging |
-| `audit` | The Kubernetes audit trail: every API call with the calling user/group, verb, object reference, and decision | Security investigation, compliance, RBAC debugging — the authoritative record of "who did what to which resource" |
-| `authenticator` | IAM-to-Kubernetes authentication decisions: which IAM ARN was mapped to which k8s username/groups, and whether the mapping succeeded | Diagnosing "Unauthorized" errors, verifying access entry configuration is correct |
-| `scheduler` | Pod scheduling decisions: which node each pod was assigned to and why | Debugging pods stuck in `Pending`, understanding affinity/taint/resource constraint effects |
-| `controllerManager` | Controller reconciliation events: Deployments creating ReplicaSets, ReplicaSets creating Pods, etc. | Understanding why the cluster's desired state isn't being reached |
+| Log type            | What it captures                                                                                                                     | Primary use                                                                                                       |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
+| `api`               | Every request to the API server: method, path, response code, latency                                                                | Traffic volume analysis, detecting unexpected API clients, rate-limit debugging                                   |
+| `audit`             | The Kubernetes audit trail: every API call with the calling user/group, verb, object reference, and decision                         | Security investigation, compliance, RBAC debugging — the authoritative record of "who did what to which resource" |
+| `authenticator`     | IAM-to-Kubernetes authentication decisions: which IAM ARN was mapped to which k8s username/groups, and whether the mapping succeeded | Diagnosing "Unauthorized" errors, verifying access entry configuration is correct                                 |
+| `scheduler`         | Pod scheduling decisions: which node each pod was assigned to and why                                                                | Debugging pods stuck in `Pending`, understanding affinity/taint/resource constraint effects                       |
+| `controllerManager` | Controller reconciliation events: Deployments creating ReplicaSets, ReplicaSets creating Pods, etc.                                  | Understanding why the cluster's desired state isn't being reached                                                 |
 
 All five types are enabled by default. Omitting any of them creates blind spots that are difficult to recover from after the fact. The `audit` log in particular is the primary evidence source for any security incident involving the API server.
 
@@ -494,17 +512,17 @@ The `cluster_endpoint` and `cluster_ca_certificate` outputs are what allow the k
 
 ### What happens if this module is misconfigured
 
-| Misconfiguration | Failure mode |
-|---|---|
-| Cluster role missing `AmazonEKSClusterPolicy` | `CreateCluster` API call fails with an IAM error |
-| `depends_on` for policy attachment removed | Sporadic IAM propagation race: cluster creation fails ~10% of the time, passes otherwise |
-| `enable_dns_hostnames = false` on the VPC (network module) | Cluster creates but nodes can never resolve the API endpoint hostname; they fail to register |
-| `subnet_ids` pointing to public subnets | Control-plane ENIs land in public subnets; cross-AZ ENI traffic is unnecessary and increases cost |
-| `endpoint_private_access = false` | Nodes reach the API server via the public endpoint, routing out through NAT gateways and back in — adds latency and NAT cost, breaks if `public_access_cidrs` is restricted to exclude the node CIDR |
-| `public_access_cidrs = ["0.0.0.0/0"]` in hardened env | Public API endpoint exposed to internet; acceptable for initial setup, should be restricted for production |
-| `authentication_mode = "CONFIG_MAP"` | Chicken-and-egg: `aws-auth` ConfigMap can't be applied until cluster is reachable, cluster isn't useful until ConfigMap is applied; particularly bad with private-endpoint-only clusters |
-| OIDC provider not created | All `AssumeRoleWithWebIdentity` calls from pods fail with "No OpenIDConnect provider found"; cluster-autoscaler, Karpenter, and any IRSA-backed workload lose their AWS access |
-| CloudWatch log group not pre-created | Log delivery to CloudWatch silently fails for the first few minutes until EKS auto-creates the group (with no retention policy, leading to unbounded log accumulation) |
+| Misconfiguration                                           | Failure mode                                                                                                                                                                                         |
+| ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Cluster role missing `AmazonEKSClusterPolicy`              | `CreateCluster` API call fails with an IAM error                                                                                                                                                     |
+| `depends_on` for policy attachment removed                 | Sporadic IAM propagation race: cluster creation fails ~10% of the time, passes otherwise                                                                                                             |
+| `enable_dns_hostnames = false` on the VPC (network module) | Cluster creates but nodes can never resolve the API endpoint hostname; they fail to register                                                                                                         |
+| `subnet_ids` pointing to public subnets                    | Control-plane ENIs land in public subnets; cross-AZ ENI traffic is unnecessary and increases cost                                                                                                    |
+| `endpoint_private_access = false`                          | Nodes reach the API server via the public endpoint, routing out through NAT gateways and back in — adds latency and NAT cost, breaks if `public_access_cidrs` is restricted to exclude the node CIDR |
+| `public_access_cidrs = ["0.0.0.0/0"]` in hardened env      | Public API endpoint exposed to internet; acceptable for initial setup, should be restricted for production                                                                                           |
+| `authentication_mode = "CONFIG_MAP"`                       | Chicken-and-egg: `aws-auth` ConfigMap can't be applied until cluster is reachable, cluster isn't useful until ConfigMap is applied; particularly bad with private-endpoint-only clusters             |
+| OIDC provider not created                                  | All `AssumeRoleWithWebIdentity` calls from pods fail with "No OpenIDConnect provider found"; cluster-autoscaler, Karpenter, and any IRSA-backed workload lose their AWS access                       |
+| CloudWatch log group not pre-created                       | Log delivery to CloudWatch silently fails for the first few minutes until EKS auto-creates the group (with no retention policy, leading to unbounded log accumulation)                               |
 
 ---
 
@@ -520,12 +538,12 @@ The module always creates one managed node group. When Karpenter is enabled, thi
 
 ### Resource inventory
 
-| Resource type | Count | Name (default) |
-|---|---|---|
-| `aws_launch_template` | 1 | `e2b-sre-fresh-` *(name_prefix, AWS appends a random suffix)* |
-| `aws_iam_role` | 1 | `e2b-sre-fresh-eks-node` |
-| `aws_iam_role_policy_attachment` | 4 | *(one per managed policy; see below)* |
-| `aws_eks_node_group` | 1 | `e2b-sre-fresh-default` |
+| Resource type                    | Count | Name (default)                                                |
+| -------------------------------- | ----- | ------------------------------------------------------------- |
+| `aws_launch_template`            | 1     | `e2b-sre-fresh-` _(name_prefix, AWS appends a random suffix)_ |
+| `aws_iam_role`                   | 1     | `e2b-sre-fresh-eks-node`                                      |
+| `aws_iam_role_policy_attachment` | 4     | _(one per managed policy; see below)_                         |
+| `aws_eks_node_group`             | 1     | `e2b-sre-fresh-default`                                       |
 
 The module also uses `data.aws_partition.current` to construct partition-portable managed policy ARNs, and a local `is_bottlerocket` boolean that switches disk configuration between the two supported AMI families.
 
@@ -662,20 +680,20 @@ The `node_role_arn` output is used by the Karpenter module to verify that the tw
 
 ### What happens if this module is misconfigured
 
-| Misconfiguration | Failure mode |
-|---|---|
-| Missing `AmazonEKSWorkerNodePolicy` | kubelet starts but cannot register the node; node stays `NotReady` indefinitely |
-| Missing `AmazonEKS_CNI_Policy` | VPC CNI cannot manage ENIs; pod IP assignment fails; pods stay in `ContainerCreating` |
-| Missing `AmazonEC2ContainerRegistryReadOnly` | EKS add-on upgrades fail with `ImagePullBackOff`; kube-proxy or CoreDNS version updates stall |
-| Missing `AmazonSSMManagedInstanceCore` | SSM Session Manager cannot connect; no shell access to nodes without a bastion or SSH |
-| `depends_on` for policy attachments removed | Intermittent IAM race at node group creation; node group occasionally fails with a role validation error |
-| `http_tokens = "optional"` (IMDSv2 disabled) | IMDSv1 re-enabled; SSRF vulnerabilities on the node can exfiltrate the node's IAM credentials |
-| `http_put_response_hop_limit = 1` | VPC CNI DaemonSet pods cannot reach IMDS; pod IP assignment fails cluster-wide |
-| `encrypted = false` on EBS volumes | Node disk contents readable if a volume snapshot is shared or physical media is recovered |
-| `delete_on_termination = false` | Orphaned EBS volumes accumulate on every node replacement; unbounded storage cost |
-| `min_size = 1` | During node replacement or AZ failure, the single remaining node may not have enough capacity for the workload's PDB to be satisfied; rolling update can cause an outage |
-| `ignore_changes` on `desired_size` removed | Every `terraform apply` resets node count to `var.desired_size`, fighting the cluster autoscaler and causing disruptive node churn |
-| Nodes in public subnets | Worker nodes get public IPs and are directly reachable from the internet; each node's ports become an external attack surface |
+| Misconfiguration                             | Failure mode                                                                                                                                                             |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Missing `AmazonEKSWorkerNodePolicy`          | kubelet starts but cannot register the node; node stays `NotReady` indefinitely                                                                                          |
+| Missing `AmazonEKS_CNI_Policy`               | VPC CNI cannot manage ENIs; pod IP assignment fails; pods stay in `ContainerCreating`                                                                                    |
+| Missing `AmazonEC2ContainerRegistryReadOnly` | EKS add-on upgrades fail with `ImagePullBackOff`; kube-proxy or CoreDNS version updates stall                                                                            |
+| Missing `AmazonSSMManagedInstanceCore`       | SSM Session Manager cannot connect; no shell access to nodes without a bastion or SSH                                                                                    |
+| `depends_on` for policy attachments removed  | Intermittent IAM race at node group creation; node group occasionally fails with a role validation error                                                                 |
+| `http_tokens = "optional"` (IMDSv2 disabled) | IMDSv1 re-enabled; SSRF vulnerabilities on the node can exfiltrate the node's IAM credentials                                                                            |
+| `http_put_response_hop_limit = 1`            | VPC CNI DaemonSet pods cannot reach IMDS; pod IP assignment fails cluster-wide                                                                                           |
+| `encrypted = false` on EBS volumes           | Node disk contents readable if a volume snapshot is shared or physical media is recovered                                                                                |
+| `delete_on_termination = false`              | Orphaned EBS volumes accumulate on every node replacement; unbounded storage cost                                                                                        |
+| `min_size = 1`                               | During node replacement or AZ failure, the single remaining node may not have enough capacity for the workload's PDB to be satisfied; rolling update can cause an outage |
+| `ignore_changes` on `desired_size` removed   | Every `terraform apply` resets node count to `var.desired_size`, fighting the cluster autoscaler and causing disruptive node churn                                       |
+| Nodes in public subnets                      | Worker nodes get public IPs and are directly reachable from the internet; each node's ports become an external attack surface                                            |
 
 ---
 
@@ -688,10 +706,10 @@ The `node_role_arn` output is used by the Karpenter module to verify that the tw
 
 ### Resource inventory
 
-| Resource type | Count | Name (default) |
-|---|---|---|
-| `aws_iam_role` | 1 | `e2b-sre-fresh-cluster-autoscaler` |
-| `aws_iam_role_policy` (inline) | 1 | `e2b-sre-fresh-cluster-autoscaler-inline` |
+| Resource type                  | Count | Name (default)                            |
+| ------------------------------ | ----- | ----------------------------------------- |
+| `aws_iam_role`                 | 1     | `e2b-sre-fresh-cluster-autoscaler`        |
+| `aws_iam_role_policy` (inline) | 1     | `e2b-sre-fresh-cluster-autoscaler-inline` |
 
 `aws_iam_role_policy_attachment.managed` is not created — the cluster-autoscaler policy has no equivalent AWS managed policy, so the inline policy path is used. The `attach_inline_policy = true` flag and the policy document from `data.aws_iam_policy_document.cluster_autoscaler` in the env are what produce the inline policy resource.
 
@@ -728,16 +746,16 @@ name:   e2b-sre-fresh-cluster-autoscaler-inline
 
 The cluster-autoscaler needs read access to the Auto Scaling Groups that back the managed node group, and write access to adjust their desired capacity. The policy grants:
 
-| Permission | Purpose |
-|---|---|
-| `autoscaling:DescribeAutoScalingGroups` | Discover which ASGs exist and their current size bounds |
-| `autoscaling:DescribeAutoScalingInstances` | Know which instances are running in each group and their health |
-| `autoscaling:DescribeLaunchConfigurations` | Inspect the instance type and resource capacity of each group |
-| `autoscaling:DescribeTags` | Find ASGs tagged with `k8s.io/cluster-autoscaler/<cluster-name>` — this is how auto-discovery locates the right groups |
-| `autoscaling:SetDesiredCapacity` | The actual scale-out call: raise the ASG's desired count when pods are unschedulable |
-| `autoscaling:TerminateInstanceInAutoScalingGroup` | Scale in: remove a specific instance and decrement the ASG count |
-| `ec2:DescribeInstanceTypes` | Determine the CPU and memory capacity of each instance type in the group |
-| `ec2:DescribeLaunchTemplateVersions` | Resolve the current launch template version to confirm instance sizing |
+| Permission                                        | Purpose                                                                                                                |
+| ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `autoscaling:DescribeAutoScalingGroups`           | Discover which ASGs exist and their current size bounds                                                                |
+| `autoscaling:DescribeAutoScalingInstances`        | Know which instances are running in each group and their health                                                        |
+| `autoscaling:DescribeLaunchConfigurations`        | Inspect the instance type and resource capacity of each group                                                          |
+| `autoscaling:DescribeTags`                        | Find ASGs tagged with `k8s.io/cluster-autoscaler/<cluster-name>` — this is how auto-discovery locates the right groups |
+| `autoscaling:SetDesiredCapacity`                  | The actual scale-out call: raise the ASG's desired count when pods are unschedulable                                   |
+| `autoscaling:TerminateInstanceInAutoScalingGroup` | Scale in: remove a specific instance and decrement the ASG count                                                       |
+| `ec2:DescribeInstanceTypes`                       | Determine the CPU and memory capacity of each instance type in the group                                               |
+| `ec2:DescribeLaunchTemplateVersions`              | Resolve the current launch template version to confirm instance sizing                                                 |
 
 All actions are on `resources = ["*"]` because the autoscaler operates account-wide (it must be able to describe all ASGs to find the ones it manages) and there is no more granular resource type that would narrow the scope without breaking auto-discovery. Scoping to specific ASG ARNs would require knowing them before the cluster is created — a bootstrapping problem.
 
@@ -753,13 +771,13 @@ The IRSA pattern closes the loop: this module creates the IAM role, and the next
 
 ### What happens if this module is misconfigured
 
-| Misconfiguration | Failure mode |
-|---|---|
-| `:sub` condition points to wrong namespace or SA name | cluster-autoscaler pod gets `AccessDenied` on every AWS API call; nodes are never scaled |
-| OIDC provider ARN from a different cluster | `InvalidIdentityToken`; the JWT's issuer doesn't match the trusted provider |
-| Missing `SetDesiredCapacity` | Autoscaler can detect that scale-out is needed but cannot execute it; pods stay `Pending` indefinitely |
-| Missing `DescribeTags` | Auto-discovery finds no node groups; autoscaler starts but does nothing |
-| `attach_inline_policy = true` with `policy_json = null` | Terraform `precondition` fails at plan time with a clear error |
+| Misconfiguration                                        | Failure mode                                                                                           |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `:sub` condition points to wrong namespace or SA name   | cluster-autoscaler pod gets `AccessDenied` on every AWS API call; nodes are never scaled               |
+| OIDC provider ARN from a different cluster              | `InvalidIdentityToken`; the JWT's issuer doesn't match the trusted provider                            |
+| Missing `SetDesiredCapacity`                            | Autoscaler can detect that scale-out is needed but cannot execute it; pods stay `Pending` indefinitely |
+| Missing `DescribeTags`                                  | Auto-discovery finds no node groups; autoscaler starts but does nothing                                |
+| `attach_inline_policy = true` with `policy_json = null` | Terraform `precondition` fails at plan time with a clear error                                         |
 
 ---
 
@@ -776,17 +794,17 @@ In `aws-fresh`, the env calls this module with `depends_on = [module.node_pool]`
 
 ### Resource inventory
 
-| Resource | Kind | Chart / API | Namespace | Opt-out variable |
-|---|---|---|---|---|
-| `helm_release.metrics_server` | Helm | `metrics-server` 3.12.2 | `kube-system` | `install_metrics_server` |
-| `helm_release.ingress_nginx` | Helm | `ingress-nginx` 4.11.3 | `ingress-nginx` | `install_ingress_nginx` |
-| `helm_release.cluster_autoscaler` | Helm | `cluster-autoscaler` 9.43.2 | `kube-system` | `install_cluster_autoscaler` |
-| `helm_release.nginx_gateway_fabric` | Helm | `nginx-gateway-fabric` 1.6.1 | `nginx-gateway` | `install_nginx_gateway_fabric` |
-| `kubectl_manifest.acme_gateway` | `Gateway` | `gateway.networking.k8s.io/v1` | `nginx-gateway` | created when NGF installed and ingress-nginx disabled |
-| `helm_release.cert_manager` | Helm | `cert-manager` v1.16.2 | `cert-manager` | `install_cert_manager` |
-| `kubectl_manifest.cluster_issuer_staging` | `ClusterIssuer` | `cert-manager.io/v1` | cluster-scoped | created when `acme_email != ""` |
-| `kubectl_manifest.cluster_issuer_prod` | `ClusterIssuer` | `cert-manager.io/v1` | cluster-scoped | created when `acme_email != ""` |
-| `helm_release.external_dns` | Helm | `external-dns` | `external-dns` | `install_external_dns` |
+| Resource                                  | Kind            | Chart / API                    | Namespace       | Opt-out variable                                      |
+| ----------------------------------------- | --------------- | ------------------------------ | --------------- | ----------------------------------------------------- |
+| `helm_release.metrics_server`             | Helm            | `metrics-server` 3.12.2        | `kube-system`   | `install_metrics_server`                              |
+| `helm_release.ingress_nginx`              | Helm            | `ingress-nginx` 4.11.3         | `ingress-nginx` | `install_ingress_nginx`                               |
+| `helm_release.cluster_autoscaler`         | Helm            | `cluster-autoscaler` 9.43.2    | `kube-system`   | `install_cluster_autoscaler`                          |
+| `helm_release.nginx_gateway_fabric`       | Helm            | `nginx-gateway-fabric` 1.6.1   | `nginx-gateway` | `install_nginx_gateway_fabric`                        |
+| `kubectl_manifest.acme_gateway`           | `Gateway`       | `gateway.networking.k8s.io/v1` | `nginx-gateway` | created when NGF installed and ingress-nginx disabled |
+| `helm_release.cert_manager`               | Helm            | `cert-manager` v1.16.2         | `cert-manager`  | `install_cert_manager`                                |
+| `kubectl_manifest.cluster_issuer_staging` | `ClusterIssuer` | `cert-manager.io/v1`           | cluster-scoped  | created when `acme_email != ""`                       |
+| `kubectl_manifest.cluster_issuer_prod`    | `ClusterIssuer` | `cert-manager.io/v1`           | cluster-scoped  | created when `acme_email != ""`                       |
+| `helm_release.external_dns`               | Helm            | `external-dns`                 | `external-dns`  | `install_external_dns`                                |
 
 ### Resources in detail
 
@@ -897,10 +915,10 @@ Two ClusterIssuers are created when `acme_email` is provided:
 
 **Solver selection.** The solver used for HTTP-01 challenges is chosen based on which HTTP controller is installed:
 
-| `install_ingress_nginx` | `install_nginx_gateway_fabric` | Solver |
-|---|---|---|
-| `true` (default) | any | `http01.ingress` via ingress-nginx |
-| `false` | `true` | `http01.gatewayHTTPRoute` via `acme-gateway` |
+| `install_ingress_nginx` | `install_nginx_gateway_fabric` | Solver                                       |
+| ----------------------- | ------------------------------ | -------------------------------------------- |
+| `true` (default)        | any                            | `http01.ingress` via ingress-nginx           |
+| `false`                 | `true`                         | `http01.gatewayHTTPRoute` via `acme-gateway` |
 
 When the `gatewayHTTPRoute` solver is used, it creates a temporary `HTTPRoute` in the workload namespace that routes the ACME challenge path to cert-manager's solver pod, using the `acme-gateway` resource as the parent ref.
 
@@ -919,6 +937,7 @@ external-dns watches `Ingress` and `Service` resources and creates matching DNS 
 `txtOwnerId = cluster_name` — external-dns writes a TXT record alongside every A/CNAME record to claim ownership. The owner ID distinguishes this cluster's records from records created by other clusters sharing the same hosted zone.
 
 **IRSA.** external-dns requires Route 53 write access. In `aws-fresh` (and `aws-existing-vpc`), a dedicated `module.external_dns_irsa` is instantiated with the following policy:
+
 - `route53:ChangeResourceRecordSets` on the target hosted zone (or all zones if `external_dns_hosted_zone_id` is empty).
 - `route53:ListHostedZones`, `ListResourceRecordSets`, `ListTagsForResource` on `*` (Route 53 does not support resource-level restrictions on List operations).
 
@@ -926,20 +945,20 @@ The IRSA role ARN is passed to the chart via `serviceAccount.annotations["eks.am
 
 ### What happens if this module is misconfigured
 
-| Misconfiguration | Failure mode |
-|---|---|
-| Module applied before node pool is Ready | All Helm installs fail; pods cannot be scheduled; Terraform exits with a Helm timeout error |
-| metrics-server not installed | HPA reports `<unknown>` targets; no pod autoscaling occurs |
-| `--kubelet-insecure-tls` added on EKS | Unnecessary; suppresses a real TLS error if the kubelet cert has been tampered with |
-| `aws-load-balancer-type: nlb` annotation missing | Classic Load Balancer provisioned instead; `target-type: ip` mode unavailable; higher latency; source IP not preserved |
-| `create_namespace = false` for ingress-nginx | Install fails if the `ingress-nginx` namespace does not already exist |
-| cluster-autoscaler installed alongside Karpenter | Both controllers issue conflicting scale-out and scale-in calls; node count thrashes; cost spikes |
-| `cluster_autoscaler_role_arn` empty when installing autoscaler | `precondition` fails at plan time; if bypassed, the autoscaler gets `AccessDenied` on every AWS call |
-| `install_nginx_gateway_fabric = true` without `wait = true` | GatewayClass not yet registered when workload chart applies Gateway/HTTPRoute; "no matches for kind" error |
-| NGF and ingress-nginx both disabled with cert-manager enabled and ACME email set | No HTTP controller exists to serve challenges; certificate issuance fails |
-| `install_cert_manager = false` with workload using cert-manager annotations | Ingress annotation is ignored; no certificate is provisioned; HTTPS listener gets no Secret |
-| `acme_email` empty with cert-manager enabled | cert-manager installs but no ClusterIssuers are created; annotations on Ingress/Certificate resources referencing `letsencrypt-*` fail |
-| `install_external_dns = true` without `external_dns_irsa` module | IRSA annotations are empty; external-dns pod starts but gets `AccessDenied` on all Route 53 calls |
+| Misconfiguration                                                                 | Failure mode                                                                                                                           |
+| -------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| Module applied before node pool is Ready                                         | All Helm installs fail; pods cannot be scheduled; Terraform exits with a Helm timeout error                                            |
+| metrics-server not installed                                                     | HPA reports `<unknown>` targets; no pod autoscaling occurs                                                                             |
+| `--kubelet-insecure-tls` added on EKS                                            | Unnecessary; suppresses a real TLS error if the kubelet cert has been tampered with                                                    |
+| `aws-load-balancer-type: nlb` annotation missing                                 | Classic Load Balancer provisioned instead; `target-type: ip` mode unavailable; higher latency; source IP not preserved                 |
+| `create_namespace = false` for ingress-nginx                                     | Install fails if the `ingress-nginx` namespace does not already exist                                                                  |
+| cluster-autoscaler installed alongside Karpenter                                 | Both controllers issue conflicting scale-out and scale-in calls; node count thrashes; cost spikes                                      |
+| `cluster_autoscaler_role_arn` empty when installing autoscaler                   | `precondition` fails at plan time; if bypassed, the autoscaler gets `AccessDenied` on every AWS call                                   |
+| `install_nginx_gateway_fabric = true` without `wait = true`                      | GatewayClass not yet registered when workload chart applies Gateway/HTTPRoute; "no matches for kind" error                             |
+| NGF and ingress-nginx both disabled with cert-manager enabled and ACME email set | No HTTP controller exists to serve challenges; certificate issuance fails                                                              |
+| `install_cert_manager = false` with workload using cert-manager annotations      | Ingress annotation is ignored; no certificate is provisioned; HTTPS listener gets no Secret                                            |
+| `acme_email` empty with cert-manager enabled                                     | cert-manager installs but no ClusterIssuers are created; annotations on Ingress/Certificate resources referencing `letsencrypt-*` fail |
+| `install_external_dns = true` without `external_dns_irsa` module                 | IRSA annotations are empty; external-dns pod starts but gets `AccessDenied` on all Route 53 calls                                      |
 
 ---
 
@@ -957,21 +976,21 @@ Karpenter is an alternative to the cluster-autoscaler. Where cluster-autoscaler 
 
 The module creates resources across four files. The full inventory when enabled:
 
-| Resource type | Count | Name (default) |
-|---|---|---|
-| `aws_iam_role` (node) | 1 | `e2b-sre-fresh-karpenter-node` |
-| `aws_iam_role_policy_attachment` (node) | 4 | *(same 4 policies as managed node group)* |
-| `aws_iam_instance_profile` | 1 | `e2b-sre-fresh-karpenter-node` |
-| `aws_eks_access_entry` | 1 | *(maps karpenter-node role → EC2_LINUX type)* |
-| `aws_iam_role` (controller, via `module.irsa`) | 1 | `e2b-sre-fresh-karpenter-controller` |
-| `aws_iam_role_policy` (controller inline) | 1 | `e2b-sre-fresh-karpenter-controller-inline` |
-| `aws_sqs_queue` | 1 | `e2b-sre-fresh-karpenter-interruption` |
-| `aws_sqs_queue_policy` | 1 | *(allows EventBridge to send to the queue)* |
-| `aws_cloudwatch_event_rule` | 4 | `e2b-sre-fresh-karpenter-{spot_interruption, rebalance_recommendation, instance_state_change, scheduled_change}` |
-| `aws_cloudwatch_event_target` | 4 | *(one target per rule, all pointing at the SQS queue)* |
-| `helm_release` (Karpenter controller) | 1 | `karpenter` in `kube-system` |
-| `kubectl_manifest` (EC2NodeClass) | 1 | `default` |
-| `kubectl_manifest` (NodePool) | 1 | `default` |
+| Resource type                                  | Count | Name (default)                                                                                                   |
+| ---------------------------------------------- | ----- | ---------------------------------------------------------------------------------------------------------------- |
+| `aws_iam_role` (node)                          | 1     | `e2b-sre-fresh-karpenter-node`                                                                                   |
+| `aws_iam_role_policy_attachment` (node)        | 4     | _(same 4 policies as managed node group)_                                                                        |
+| `aws_iam_instance_profile`                     | 1     | `e2b-sre-fresh-karpenter-node`                                                                                   |
+| `aws_eks_access_entry`                         | 1     | _(maps karpenter-node role → EC2_LINUX type)_                                                                    |
+| `aws_iam_role` (controller, via `module.irsa`) | 1     | `e2b-sre-fresh-karpenter-controller`                                                                             |
+| `aws_iam_role_policy` (controller inline)      | 1     | `e2b-sre-fresh-karpenter-controller-inline`                                                                      |
+| `aws_sqs_queue`                                | 1     | `e2b-sre-fresh-karpenter-interruption`                                                                           |
+| `aws_sqs_queue_policy`                         | 1     | _(allows EventBridge to send to the queue)_                                                                      |
+| `aws_cloudwatch_event_rule`                    | 4     | `e2b-sre-fresh-karpenter-{spot_interruption, rebalance_recommendation, instance_state_change, scheduled_change}` |
+| `aws_cloudwatch_event_target`                  | 4     | _(one target per rule, all pointing at the SQS queue)_                                                           |
+| `helm_release` (Karpenter controller)          | 1     | `karpenter` in `kube-system`                                                                                     |
+| `kubectl_manifest` (EC2NodeClass)              | 1     | `default`                                                                                                        |
+| `kubectl_manifest` (NodePool)                  | 1     | `default`                                                                                                        |
 
 ### Resources in detail
 
@@ -1112,12 +1131,12 @@ With interruption handling, Karpenter receives the warning event, begins drainin
 
 Four EventBridge rules capture different stages of the instance lifecycle:
 
-| Event | Source | When it fires |
-|---|---|---|
-| Spot Instance Interruption Warning | `aws.ec2` | ~2 minutes before a spot instance is reclaimed |
-| Instance Rebalance Recommendation | `aws.ec2` | AWS signals that a spot instance is at elevated interruption risk; earlier than the interruption warning |
-| Instance State-change Notification | `aws.ec2` | Instance enters stopping, stopped, or terminated state |
-| AWS Health Event | `aws.health` | Scheduled maintenance or retirement that will take the instance offline |
+| Event                              | Source       | When it fires                                                                                            |
+| ---------------------------------- | ------------ | -------------------------------------------------------------------------------------------------------- |
+| Spot Instance Interruption Warning | `aws.ec2`    | ~2 minutes before a spot instance is reclaimed                                                           |
+| Instance Rebalance Recommendation  | `aws.ec2`    | AWS signals that a spot instance is at elevated interruption risk; earlier than the interruption warning |
+| Instance State-change Notification | `aws.ec2`    | Instance enters stopping, stopped, or terminated state                                                   |
+| AWS Health Event                   | `aws.health` | Scheduled maintenance or retirement that will take the instance offline                                  |
 
 All four rules forward matching events to the same SQS queue. Karpenter polls the queue continuously and reacts to each event type. The rebalance recommendation in particular gives Karpenter the opportunity to migrate pods proactively — before the 2-minute interruption warning — when AWS signals elevated reclaim risk.
 
@@ -1138,14 +1157,14 @@ interruption_queue_name       → already wired into the Helm release; exposed i
 
 ### What happens if this module is misconfigured
 
-| Misconfiguration | Failure mode |
-|---|---|
-| Instance profile not created | `RunInstances` call fails: "Invalid IAM Instance Profile"; no nodes are provisioned |
-| `aws_eks_access_entry` missing | Karpenter launches instances; nodes attempt to join; API server rejects them; nodes stay `NotReady` forever |
-| Controller IRSA missing `iam:PassRole` | `RunInstances` call fails: "not authorized to pass role"; Karpenter cannot launch any nodes |
-| Controller IRSA missing `ec2:DescribeSpotPriceHistory` | Spot instance selection fails; Karpenter falls back to on-demand only (silent degradation) |
-| `wait = false` on Helm release | EC2NodeClass and NodePool manifests applied before CRDs are registered; both `kubectl_manifest` resources fail |
-| `kubectl_manifest` replaced with `kubernetes_manifest` | Plan fails: "no matches for CRD" because the official provider validates at plan time before the chart has installed the CRDs |
-| Interruption queue not created | Spot nodes receive no warning before termination; pods experience abrupt failure; PDB guarantees bypassed |
-| `limits.cpu` or `limits.memory` not set | Karpenter has no ceiling on node count or total capacity; a misbehaving HPA or resource request can trigger unbounded EC2 spend |
-| Karpenter and cluster-autoscaler both installed | Both controllers react to the same unschedulable pods; the autoscaler raises ASG desired count, Karpenter launches separate instances, the autoscaler's new nodes may be immediately consolidated by Karpenter; node churn and unpredictable costs |
+| Misconfiguration                                       | Failure mode                                                                                                                                                                                                                                       |
+| ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Instance profile not created                           | `RunInstances` call fails: "Invalid IAM Instance Profile"; no nodes are provisioned                                                                                                                                                                |
+| `aws_eks_access_entry` missing                         | Karpenter launches instances; nodes attempt to join; API server rejects them; nodes stay `NotReady` forever                                                                                                                                        |
+| Controller IRSA missing `iam:PassRole`                 | `RunInstances` call fails: "not authorized to pass role"; Karpenter cannot launch any nodes                                                                                                                                                        |
+| Controller IRSA missing `ec2:DescribeSpotPriceHistory` | Spot instance selection fails; Karpenter falls back to on-demand only (silent degradation)                                                                                                                                                         |
+| `wait = false` on Helm release                         | EC2NodeClass and NodePool manifests applied before CRDs are registered; both `kubectl_manifest` resources fail                                                                                                                                     |
+| `kubectl_manifest` replaced with `kubernetes_manifest` | Plan fails: "no matches for CRD" because the official provider validates at plan time before the chart has installed the CRDs                                                                                                                      |
+| Interruption queue not created                         | Spot nodes receive no warning before termination; pods experience abrupt failure; PDB guarantees bypassed                                                                                                                                          |
+| `limits.cpu` or `limits.memory` not set                | Karpenter has no ceiling on node count or total capacity; a misbehaving HPA or resource request can trigger unbounded EC2 spend                                                                                                                    |
+| Karpenter and cluster-autoscaler both installed        | Both controllers react to the same unschedulable pods; the autoscaler raises ASG desired count, Karpenter launches separate instances, the autoscaler's new nodes may be immediately consolidated by Karpenter; node churn and unpredictable costs |
