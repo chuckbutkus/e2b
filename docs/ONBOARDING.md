@@ -174,11 +174,99 @@ $(terraform output -raw configure_kubectl)
 
 ---
 
+## Local Development (kind cluster)
+
+For local testing with [kind](https://kind.sigs.k8s.io/), use the `kind-config.yaml` at the repo root. It maps node ports 80 and 443 to host ports 8080 and 8443 so `curl localhost:8080` works without an external load balancer.
+
+> **None of the kind-specific steps below are required in production.** Cloud clusters provision a real `LoadBalancer` Service for NGF; the cloud provider assigns an external IP automatically. No `hostPort`, no `extraPortMappings`, no port conflicts.
+
+### Create the cluster
+
+```bash
+kind create cluster --config kind-config.yaml
+```
+
+### Install the Gateway API CRDs and NGINX Gateway Fabric
+
+NGF 2.x has a split architecture: a **controller** runs in the `nginx-gateway` namespace and a **separate nginx data-plane pod** is provisioned per-Gateway in the same namespace as the Gateway resource. They are distinct Deployments. The controller owns and continuously reconciles the nginx deployment — patching the nginx deployment directly with `kubectl` will be reverted within seconds.
+
+```bash
+# Gateway API CRDs (required before installing NGF)
+kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.0/standard-install.yaml
+
+# NGF — with hostPort so the kind port-mapping (node:80 → host:8080) carries traffic
+helm upgrade --install ngf oci://ghcr.io/nginx/charts/nginx-gateway-fabric \
+  --version 2.6.7 \
+  --create-namespace -n nginx-gateway \
+  --set nginx.service.type=ClusterIP \
+  --set-json 'nginx.container.hostPorts=[{"port":80,"containerPort":80},{"port":443,"containerPort":443}]'
+```
+
+**`nginx.container.hostPorts`** is the correct helm value path for NGF 2.6.7. The following are silently ignored and have no effect:
+- `nginxGateway.hostPort` (wrong key)
+- `nginx.hostPorts` (missing the intermediate `container` level)
+
+> **Port conflict**: if `ingress-nginx` is already installed in the cluster it will hold port 80 via its own `hostPort`, blocking NGF from scheduling. Either remove `ingress-nginx` first (`helm uninstall ingress-nginx -n ingress-nginx`) or use the port-forward alternative below.
+
+### Deploy the workload in Gateway API mode
+
+```bash
+helm upgrade --install sre-workload ./helm/sre-workload \
+  --namespace default \
+  -f helm/sre-workload/values.yaml \
+  --set ingress.enabled=false \
+  --set gateway.enabled=true \
+  --set gateway.className=nginx \
+  --set gateway.host=sre.local \
+  --set gateway.createGateway=true \
+  --set gateway.tls.enabled=false \
+  --set 'networkPolicy.allowedIngressNamespaces={ingress-nginx,nginx-gateway,default}'
+```
+
+**Why `default` in `allowedIngressNamespaces`?** In NGF 2.x the nginx data-plane pod is provisioned in the same namespace as the Gateway (here `default`). The NetworkPolicy must allow ingress from that namespace or traffic from NGF to the workload pods is silently dropped. In production the nginx pod and the Gateway typically share a dedicated namespace (e.g. `nginx-gateway`) which is already in the default allowlist, so this override is not needed.
+
+### Verify
+
+```bash
+# Controller + data-plane pods should all be Running
+kubectl get pods -A | grep -i nginx
+
+# Gateway and HTTPRoute must show Accepted / Programmed
+kubectl get gateway,httproute -n default
+
+# Smoke-test the workload directly (bypasses NGF and NetworkPolicy)
+kubectl run tmp --image=curlimages/curl --rm -it --restart=Never -- \
+  curl -s http://sre-workload.default.svc.cluster.local:8080/healthz
+
+# Full end-to-end path through NGF
+curl -H "Host: sre.local" http://localhost:8080/healthz
+```
+
+### Alternative: port-forward (when hostPort is unavailable)
+
+If port 80 is already taken by another controller and removing it is not an option, skip the `hostPorts` flag and use `kubectl port-forward` instead:
+
+```bash
+# Install NGF without hostPort
+helm upgrade --install ngf oci://ghcr.io/nginx/charts/nginx-gateway-fabric \
+  --version 2.6.7 \
+  --create-namespace -n nginx-gateway \
+  --set nginx.service.type=ClusterIP
+
+# In a separate terminal — forward the NGF-provisioned nginx service
+kubectl -n default port-forward svc/sre-workload-nginx 8080:80
+
+# Test
+curl -H "Host: sre.local" http://localhost:8080/healthz
+```
+
+---
+
 ## Deploy the Workload
 
-After any of the above Terraform paths succeed, deploy the Helm chart. The chart is cloud-agnostic; cloud-specific settings live in `values-aws.yaml` / `values-gcp.yaml`.
+After any of the above Terraform paths succeed, deploy the Helm chart. The chart is cloud-agnostic; cloud-specific settings live in `values-aws.yaml` / `values-gcp.yaml`. Each cloud has two overlay files: one for Ingress mode and one for Gateway API mode.
 
-### AWS
+### AWS — Ingress mode (ingress-nginx)
 
 ```bash
 # The IRSA role ARN is an output from the Terraform step, or from the
@@ -194,7 +282,19 @@ helm install sre-workload ./helm/sre-workload \
   --wait --timeout 5m
 ```
 
-### GCP
+### AWS — Gateway API mode (NGINX Gateway Fabric)
+
+```bash
+helm install sre-workload ./helm/sre-workload \
+  -f helm/sre-workload/values.yaml \
+  -f helm/sre-workload/values-aws-gateway.yaml \
+  --set gateway.host=<your-hostname> \
+  --set gateway.tls.enabled=true \
+  --namespace default \
+  --wait --timeout 5m
+```
+
+### GCP — Ingress mode (ingress-nginx)
 
 ```bash
 helm install sre-workload ./helm/sre-workload \
@@ -207,12 +307,29 @@ helm install sre-workload ./helm/sre-workload \
   --wait --timeout 5m
 ```
 
+### GCP — Gateway API mode (NGINX Gateway Fabric)
+
+```bash
+helm install sre-workload ./helm/sre-workload \
+  -f helm/sre-workload/values.yaml \
+  -f helm/sre-workload/values-gcp-gateway.yaml \
+  --set gateway.host=<your-hostname> \
+  --set gateway.tls.enabled=true \
+  --namespace default \
+  --wait --timeout 5m
+```
+
 ### Verify
 
 ```bash
 kubectl get pods -l app.kubernetes.io/name=sre-workload
 kubectl get hpa sre-workload
+
+# Ingress mode
 kubectl get ingress sre-workload
+
+# Gateway API mode
+kubectl get gateway,httproute -n default
 ```
 
 All pods should reach `Running/Ready` within 2 minutes. The HPA will show `TARGETS` and `REPLICAS` once metrics-server is fully up (~60 s after install).

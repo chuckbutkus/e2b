@@ -27,6 +27,8 @@ gcloud container clusters get-credentials <cluster-name> --region <region> --pro
 
 ## Deploy / Upgrade the Workload
 
+### Ingress mode (ingress-nginx)
+
 ```bash
 # First install — AWS
 helm install sre-workload ./helm/sre-workload \
@@ -56,6 +58,40 @@ helm upgrade sre-workload ./helm/sre-workload \
   --atomic --cleanup-on-fail --timeout 5m
 ```
 
+### Gateway API mode (NGINX Gateway Fabric)
+
+NGF 2.x runs two separate Deployments: a **controller** in `nginx-gateway` and a **nginx data-plane pod** provisioned per-Gateway in the same namespace as the Gateway resource. The controller owns the nginx Deployment and reconciles it continuously — do not patch the nginx Deployment directly with `kubectl`.
+
+```bash
+# First install — AWS
+helm install sre-workload ./helm/sre-workload \
+  -f helm/sre-workload/values.yaml \
+  -f helm/sre-workload/values-aws-gateway.yaml \
+  --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=<IRSA_ROLE_ARN> \
+  --set gateway.host=<your-hostname> \
+  --set gateway.tls.enabled=true \
+  --namespace default \
+  --atomic --cleanup-on-fail --timeout 5m
+
+# First install — GCP
+helm install sre-workload ./helm/sre-workload \
+  -f helm/sre-workload/values.yaml \
+  -f helm/sre-workload/values-gcp-gateway.yaml \
+  --set serviceAccount.annotations."iam\.gke\.io/gcp-service-account"=<GSA_EMAIL> \
+  --set gateway.host=<your-hostname> \
+  --set gateway.tls.enabled=true \
+  --namespace default \
+  --atomic --cleanup-on-fail --timeout 5m
+
+# Upgrade (change install to upgrade; same flags)
+helm upgrade sre-workload ./helm/sre-workload \
+  -f helm/sre-workload/values.yaml \
+  -f helm/sre-workload/values-aws-gateway.yaml \
+  --set gateway.host=<your-hostname> \
+  --namespace default \
+  --atomic --cleanup-on-fail --timeout 5m
+```
+
 `--atomic` implies `--wait`: it blocks until all pods are Ready and the rollout completes, exactly like plain `--wait` did before. The difference is what happens on failure. If the release does not converge within `--timeout`:
 
 - **`helm upgrade --atomic`** automatically rolls the release back to the last successful revision — no broken release sits around waiting for someone to notice and run `helm rollback` by hand.
@@ -77,7 +113,7 @@ kubectl get pods -l app.kubernetes.io/name=sre-workload
 # Rollout status
 kubectl rollout status deployment/sre-workload
 
-# Endpoint reachability (from within the cluster)
+# Endpoint reachability (from within the cluster — bypasses ingress/gateway)
 kubectl run curl-test --rm -it --image=curlimages/curl --restart=Never -- \
   curl -s http://sre-workload:8080/healthz
 
@@ -90,6 +126,20 @@ kubectl get pdb sre-workload
 # Recent events (node scheduling, image pull, probe failures)
 kubectl describe deployment sre-workload | tail -30
 kubectl get events --sort-by=.metadata.creationTimestamp | grep sre-workload
+```
+
+**Gateway API mode — additional checks:**
+
+```bash
+# Both Gateway and HTTPRoute must be Accepted and Programmed
+kubectl get gateway,httproute -n default
+
+# Detailed status conditions (look for Accepted: true, Programmed: true)
+kubectl describe gateway sre-workload -n default
+kubectl describe httproute sre-workload -n default
+
+# NGF controller and nginx data-plane pods (both must be Running)
+kubectl get pods -A | grep -i nginx
 ```
 
 ---
@@ -240,6 +290,50 @@ kubectl describe ingress sre-workload
 - Confirm `ingress-nginx` is running: `kubectl get pods -n ingress-nginx`
 - Confirm the ingress class matches: `kubectl get ingressclass`
 - On AWS, the `ingress-nginx` controller's LoadBalancer Service should have an external IP/hostname within 2–3 minutes of the Helm install. If not, check the AWS Load Balancer creation in the EC2 console and inspect `ingress-nginx` controller logs.
+
+### Gateway API not routing traffic
+
+Start by isolating which layer is broken — workload, NetworkPolicy, or NGF itself.
+
+```bash
+# Step 1 — confirm the workload responds directly (rules out app-level issues)
+kubectl run tmp --image=curlimages/curl --rm -it --restart=Never -- \
+  curl -s http://sre-workload.default.svc.cluster.local:8080/healthz
+
+# Step 2 — check Gateway and HTTPRoute status
+kubectl get gateway,httproute -n default
+kubectl describe gateway sre-workload -n default   # look for Programmed: true
+kubectl describe httproute sre-workload -n default  # look for Accepted: true
+
+# Step 3 — confirm both NGF pods are Running
+kubectl get pods -A | grep -i nginx
+```
+
+**Common causes and fixes:**
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `GatewayClass "nginx" not found` | NGF not installed or installed with a different class name | `kubectl get gatewayclass` to find the real name; reinstall NGF or update `gateway.className` |
+| Gateway shows `Programmed: false` | NGF controller has not reconciled the Gateway yet, or the GatewayClass is wrong | Check NGF controller logs: `kubectl logs -n nginx-gateway -l app.kubernetes.io/name=nginx-gateway` |
+| HTTPRoute shows `Accepted: false` | `parentRef` doesn't match the Gateway name/namespace, or `sectionName` doesn't match a listener | Verify `gateway.host` and `gateway.createGateway` values match what was deployed |
+| Gateway and HTTPRoute look healthy but requests get no response | NetworkPolicy is blocking traffic from the NGF nginx data-plane pod to the workload pods | See NetworkPolicy note below |
+| Gateway and HTTPRoute look healthy but requests get no response (cloud) | NGF's LoadBalancer Service has no external IP | Check cloud LB provisioning; inspect NGF controller logs |
+
+**NetworkPolicy:** In NGF 2.x the nginx data-plane pod runs in the same namespace as the Gateway resource. The workload's NetworkPolicy must allow ingress from that namespace. The default `networkPolicy.allowedIngressNamespaces` covers `nginx-gateway` (for production, where the Gateway typically lives in that namespace). If the Gateway is in a different namespace, add it:
+
+```bash
+helm upgrade sre-workload ./helm/sre-workload \
+  -f helm/sre-workload/values.yaml \
+  -f helm/sre-workload/values-aws-gateway.yaml \
+  --set 'networkPolicy.allowedIngressNamespaces={ingress-nginx,nginx-gateway,<gateway-namespace>}' \
+  --atomic --cleanup-on-fail --timeout 5m
+```
+
+**NGF helm value reference (v2.6.7):** Configuration for the nginx data-plane container lives under `nginx.container.*` in the NGF chart. The `hostPort` setting for kind/local use specifically is:
+```bash
+--set-json 'nginx.container.hostPorts=[{"port":80,"containerPort":80},{"port":443,"containerPort":443}]'
+```
+Keys at `nginx.hostPorts` or `nginxGateway.hostPort` are not valid in 2.6.7 and are silently ignored. To verify what a release actually has stored: `helm get values ngf -n nginx-gateway`.
 
 ---
 
