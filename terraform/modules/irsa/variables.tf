@@ -3,7 +3,7 @@ variable "role_name" {
 }
 
 variable "oidc_provider_arn" {
-  description = "ARN of the IAM OIDC provider (from modules/cluster/aws-eks or modules/cluster/aws-existing outputs)."
+  description = "ARN of the IAM OIDC provider (from modules/cluster/aws-eks or modules/cluster/aws-eks-existing outputs)."
   type        = string
 }
 
