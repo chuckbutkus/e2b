@@ -1,5 +1,5 @@
 module "cluster" {
-  source = "../../modules/cluster/existing"
+  source = "../../modules/cluster/aws-existing"
 
   cluster_name = var.cluster_name
 }
