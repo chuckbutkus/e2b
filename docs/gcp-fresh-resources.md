@@ -91,6 +91,18 @@ GKE's VPC-native networking (alias IP) requires named secondary ranges on the su
 
 **`private_ip_google_access = true`.** Nodes in this subnet have no external IPs. Normally, that would mean they cannot reach any external address — including Google's own APIs. Private Google Access is a VPC routing feature that allows instances without external IPs to reach Google APIs and services (Cloud Storage, Artifact Registry, Cloud Logging, the GKE metadata server) via Google's internal network rather than requiring an external IP or Cloud NAT. This is required for private GKE nodes: without it, nodes cannot pull images from Artifact Registry, cannot push logs to Cloud Logging, and cannot communicate with GKE's own management plane.
 
+**VPC Flow Logs (`log_config` block).** With `enable_flow_logs = true` (the default), a `log_config` block is added to the subnet enabling GCP VPC Flow Logs. Unlike AWS Flow Logs — which require a separate IAM role, CloudWatch log group, and `aws_flow_log` resource — GCP flow logging is a subnet attribute with no additional resources.
+
+```
+aggregation_interval: INTERVAL_5_SEC    every 5 seconds
+flow_sampling:        0.5               50% of packets sampled (default; configurable via flow_logs_sampling_rate)
+metadata:             INCLUDE_ALL_METADATA
+```
+
+`INCLUDE_ALL_METADATA` captures source and destination IP, port, protocol, bytes, and packets for every sampled flow — enough to reconstruct communication patterns, investigate anomalous connections, and satisfy audit requirements. At 50% sampling, cost is moderate; lower the rate via `flow_logs_sampling_rate` if log volume becomes a concern, or raise it to 1.0 for full capture in high-security environments.
+
+Set `enable_flow_logs = false` to omit the `log_config` block entirely (e.g., when a shared VPC already has org-level flow logging enabled).
+
 #### Cloud Router (`google_compute_router.this`)
 
 ```
@@ -215,6 +227,8 @@ deletion_protection:      false
 On AWS, each cluster has its own unique OIDC issuer URL, which must be explicitly registered as an IAM identity provider before IRSA works. On GCP, the workload pool `<project_id>.svc.id.goog` is a fixed, permanent, per-project resource that requires no registration step. Every GKE cluster in the project shares the same workload pool identifier. This configuration tells GKE to enable the in-cluster plumbing (the GKE metadata proxy on nodes) that makes Workload Identity token exchange work. There is no separate "register an OIDC provider" step.
 
 **Release channel.** `release_channel { channel = "REGULAR" }` opts the cluster into GKE's managed upgrade cadence. REGULAR receives GKE-optimized Kubernetes minor version upgrades roughly two to four weeks after they reach general availability, along with security patches. RAPID receives upgrades sooner; STABLE receives them later (with longer soak time). The release channel replaces the EKS `kubernetes_version` variable: rather than pinning a specific version, you pick a cadence and let Google manage the version progression. Auto-upgrades of both the control plane and node pools (enabled by `management.auto_upgrade = true` in the node pool module) align with the selected channel.
+
+**Maintenance window.** `maintenance_policy { recurring_window {} }` restricts when GKE performs auto-upgrades and auto-repair operations. The default window runs **weekends 02:00–06:00 UTC** (`FREQ=WEEKLY;BYDAY=SA,SU`), keeping disruptive node operations out of weekday business hours. All three fields are configurable: `maintenance_start_time`, `maintenance_end_time` (must be ≥4 hours after start), and `maintenance_recurrence` (any valid RRULE string). For example, to use a nightly window instead: set `FREQ=DAILY` with a 4-hour overnight window. Without a maintenance window, GKE upgrades on Google's schedule — typically fine for the control plane (which is fully managed), but potentially disruptive for node pools if upgrades coincide with peak traffic.
 
 **Logging and monitoring.** `logging_config { enable_components = ["SYSTEM_COMPONENTS", "WORKLOADS"] }` ships Kubernetes system component logs (api-server, scheduler, etcd, controller-manager) and workload pod logs to Cloud Logging. `monitoring_config { enable_components = ["SYSTEM_COMPONENTS"] }` ships cluster metrics to Cloud Monitoring. These are the GCP equivalents of EKS's `enabled_cluster_log_types` — GKE routes them to Cloud Logging automatically rather than requiring a separately managed CloudWatch log group.
 

@@ -62,7 +62,22 @@ Before describing the chart, the image's actual runtime behaviour:
 
 **Port 8080** is the application port. Every path ŌĆö `/healthz`, `/readyz`, `/this-path-does-not-exist`, and all others ŌĆö returns `200 OK`. This is a catch-all router, not a differentiated health endpoint. Liveness and readiness probes both return `200` on every path; the probes are valid signals that the HTTP server is alive, but they do not verify that the workload is actually healthy in any deeper sense. All chart defaults (`service.port: 8080`, `probes.path: /healthz`, `probes.readyPath: /readyz`) reflect this confirmed behaviour.
 
-**Port 9090** is a second HTTP server labelled "internal server" in the container's own startup log. Unlike port 8080, it returns proper `404` responses on unknown paths ŌĆö it has a real router. Its purpose is unconfirmed: it is not a Prometheus `/metrics` endpoint and is not the standard `net/http/pprof` mount. This port is deliberately not exposed anywhere in the chart: no Service port, no Ingress rule, no NetworkPolicy allow rule. If its purpose is identified later, the addition is minimal ŌĆö a second container port, a matching Service port, and a scoped NetworkPolicy rule.
+**Port 9090** is a second HTTP server labelled "internal server" in the container's own startup log. Unlike port 8080, it returns proper `404` responses on unknown paths (it has a real router). Its purpose is unconfirmed: it is not a Prometheus `/metrics` endpoint and is not the standard `net/http/pprof` mount. This port is deliberately not exposed anywhere in the chart: no Service port, no Ingress rule, no NetworkPolicy allow rule.
+
+**To investigate before enabling,** run the container and probe the port to enumerate live routes:
+
+```bash
+docker run --rm -d -p 18080:8080 -p 19090:9090 --name sre-probe ghcr.io/e2b-dev/sre-interview:latest
+# Scan for known admin/metrics/debug path patterns
+for path in /metrics /debug/pprof /debug/vars /healthz /readyz /admin /status /info /version; do
+  echo -n "$path: "; curl -s -o /dev/null -w "%{http_code}" http://localhost:19090$path; echo
+done
+# Extract route strings from the binary if Go-based
+docker exec sre-probe sh -c 'strings /proc/1/exe 2>/dev/null | grep -E "^/(metrics|debug|admin|pprof|status|api)" | sort -u'
+docker rm -f sre-probe
+```
+
+Once the routes are confirmed, the addition is a second named port (`internal`) on the Service, a matching `containerPort`, and a scoped `NetworkPolicy` ingress rule rather than broadening the existing `from: []` rule.
 
 ---
 
@@ -88,10 +103,10 @@ The ServiceAccount is the Kubernetes identity the workload pods run as. Two prop
 
 **`automountServiceAccountToken: false`** is set at both the ServiceAccount level and the pod spec level (see Deployment below). The Kubernetes default is `true` ŌĆö every pod receives a projected JWT for the in-cluster API server, mounted at `/var/run/secrets/kubernetes.io/serviceaccount/token`, even if the workload never calls the API server. For workloads that use AWS IRSA or GCP Workload Identity, this default token is unnecessary: IRSA injects its own projected token via the EKS pod identity webhook; GKE's metadata proxy issues tokens on demand. Having both a mounted API server token and a cloud-identity token in the same pod is redundant and slightly increases the blast radius if a pod is compromised. Setting both fields to `false` ensures the token is not mounted.
 
-**`annotations`** is empty in `values.yaml` and populated in two ways:
+**`annotations`** is empty (`{}`) in both `values.yaml` and all cloud overlays. The cloud overlays no longer pre-seed the annotation key with an empty string — an empty-string annotation is written to the ServiceAccount object but creates no IAM binding, and creates the false impression that one exists. Supply the value only when the workload genuinely needs cloud API access:
 
-- On AWS: the cloud overlay sets the key `eks.amazonaws.com/role-arn` to an empty string, and the deployer provides the actual IRSA role ARN via `--set`. The EKS pod identity webhook reads this annotation and injects `AWS_ROLE_ARN` and `AWS_WEB_IDENTITY_TOKEN_FILE` into pods running under this ServiceAccount.
-- On GCP: the cloud overlay sets `iam.gke.io/gcp-service-account` to an empty string, and the deployer provides the GSA email. GKE's metadata proxy reads this annotation and issues GCP access tokens for the specified GSA when pods request credentials.
+- On AWS: `--set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=<IRSA_ROLE_ARN>`. The EKS pod identity webhook reads this annotation and injects `AWS_ROLE_ARN` and `AWS_WEB_IDENTITY_TOKEN_FILE` into pods running under this ServiceAccount.
+- On GCP: `--set serviceAccount.annotations."iam\.gke\.io/gcp-service-account"=<GSA_EMAIL>`. GKE's metadata proxy reads this annotation and issues GCP access tokens for the named Google Service Account when pods request credentials.
 
 ---
 
@@ -165,7 +180,7 @@ maxUnavailable: 0
 maxSurge: 25%
 ```
 
-`maxUnavailable: 0` means capacity never drops below the current replica count during a rollout. No pod is removed until a replacement is Running and Ready. Combined with `maxSurge: 25%`, Kubernetes can run up to 25% more pods than the desired count during the transition ŌĆö at `minReplicas = 3`, that means one extra pod (3 ├Ś 25% = 0.75, rounded up to 1). The rollout pattern is: add one new pod, wait for it to pass readiness, remove one old pod, repeat. The `PodDisruptionBudget` (`minAvailable: 1`) is respected throughout because `maxUnavailable: 0` is stricter.
+`maxUnavailable: 0` means capacity never drops below the current replica count during a rollout. No pod is removed until a replacement is Running and Ready. Combined with `maxSurge: 25%`, Kubernetes can run up to 25% more pods than the desired count during the transition ŌĆö at `minReplicas = 3`, that means one extra pod (3 ├Ś 25% = 0.75, rounded up to 1). The rollout pattern is: add one new pod, wait for it to pass readiness, remove one old pod, repeat. The `PodDisruptionBudget` (`minAvailable: 2`) is respected throughout because `maxUnavailable: 0` is stricter during rolling updates; the PDB governs concurrent node-level disruptions outside Deployment control.
 
 #### Pod security context
 
@@ -240,6 +255,19 @@ limits:   { cpu: 500m, memory: 512Mi }
 **Requests** are what the scheduler uses to decide where to place a pod and what the HPA uses to compute utilisation percentages. At 100m CPU and 128Mi memory, the workload's resource footprint is declared to be small. On an m6i.large (2 vCPU, 8 GiB), this allows up to 20 pods by CPU and 64 by memory before the node is saturated ŌĆö well above the HPA maximum of 10.
 
 **Limits** cap the maximum resources the container can consume. At 500m CPU (half a core), the workload can burst up to five times its baseline during a spike without being throttled. At 512Mi memory, the container is killed by the OOM killer if it exceeds this value. The 4:1 ratio between limit and request (for both CPU and memory) is deliberately generous, reflecting that the workload's true steady-state consumption is unconfirmed against real traffic.
+
+#### Graceful shutdown (`terminationGracePeriodSeconds` + `preStop`)
+
+```
+terminationGracePeriodSeconds: 30   (configurable via values.terminationGracePeriodSeconds)
+lifecycle.preStop: sleep 5          (configurable via values.lifecycle.preStopSleepSeconds)
+```
+
+When a pod is evicted or replaced, Kubernetes sends `SIGTERM` to the container and simultaneously removes the pod's IP from the Service's endpoint list. However, kube-proxy and iptables propagation are not instantaneous — there is a window during which load balancers and other pods may still route new connections to the terminating pod. If the container stops immediately on `SIGTERM`, those in-flight requests receive connection resets.
+
+The `preStop` hook runs **before** `SIGTERM` is delivered. The 5-second `sleep` gives kube-proxy time to finish propagating the endpoint removal to all nodes, so that by the time `SIGTERM` arrives, no new connections are being routed to this pod. Existing connections continue to drain during the remaining grace period.
+
+`terminationGracePeriodSeconds: 30` is the total budget from the start of termination to `SIGKILL`. The timeline is: preStop hook starts (5s sleep) → SIGTERM delivered → workload performs its own graceful shutdown → SIGKILL if still running at 30s. The 30s budget must exceed `preStopSleepSeconds` plus the workload's own shutdown time; adjust both values if the workload takes longer to drain (e.g., long-lived WebSocket connections or slow connection draining).
 
 ---
 
@@ -331,18 +359,18 @@ spec:
 ```yaml
 apiVersion: policy/v1
 spec:
-  minAvailable: 1
+  minAvailable: 2
   selector:
     matchLabels: <selector for this Deployment's pods>
 ```
 
 A PodDisruptionBudget constrains voluntary disruptions ŌĆö operations initiated by humans or controllers, such as node drains, cluster upgrades, and Karpenter consolidations. The PDB does not protect against involuntary disruptions (node failures, OOM kills).
 
-`minAvailable: 1` means at least one pod must remain Running at all times. During a node drain (whether from a cluster-autoscaler scale-in, a Karpenter consolidation, or a node group rolling upgrade), the eviction API checks all PDBs before evicting any pod. If evicting a pod would reduce the available count below `minAvailable`, the eviction is refused until another pod becomes available elsewhere.
+`minAvailable: 2` means at least two pods must remain Running at all times. During a node drain (whether from a cluster-autoscaler scale-in, a Karpenter consolidation, or a node group rolling upgrade), the eviction API checks all PDBs before evicting any pod. If evicting a pod would reduce the available count below `minAvailable`, the eviction is refused until a replacement pod becomes available elsewhere.
 
-With `minReplicas: 3` and the RollingUpdate strategy's `maxUnavailable: 0`, the PDB is a secondary enforcement layer ŌĆö the Deployment's update strategy already prevents capacity from dropping during rollouts. The PDB governs the node-level operations that happen outside the Deployment controller's scope.
+With `minReplicas: 3`, requiring 2 available at all times means at most 1 pod can be disrupted simultaneously. This prevents a scenario where two consecutive single-pod evictions could leave only 1 pod serving during overlapping drain operations. Node drains are serialised: the second eviction is blocked until the first pod has been rescheduled and reaches Ready — no deadlock occurs, just sequential progress. If the cluster needs to drain multiple nodes at once, the upgrade proceeds one pod at a time.
 
-`minAvailable: 1` is deliberately low rather than, for example, `minAvailable: 2`. A stricter setting risks deadlock: if the cluster needs to drain two nodes simultaneously (e.g., during a full node pool version upgrade) and there are only 3 pods, a `minAvailable: 2` PDB would block both drains indefinitely. With `minAvailable: 1`, the upgrade can proceed.
+With `minReplicas: 3` and the RollingUpdate strategy's `maxUnavailable: 0`, the PDB is a secondary enforcement layer — the Deployment's update strategy already prevents capacity from dropping during rolling image updates. The PDB governs node-level disruptions (drains, consolidations, upgrades) that happen outside the Deployment controller's scope.
 
 ---
 
@@ -544,7 +572,10 @@ The ServiceMonitor is a Prometheus Operator CRD. When enabled, Prometheus (confi
 
 This resource is opt-in because it requires the Prometheus Operator to be installed in the cluster. If enabled without the Operator, the manifest is accepted by the API server (if the CRD was ever installed) but has no effect. Neither the chart nor the k8s-platform module installs the Prometheus Operator.
 
-The scrape path `/metrics` and port `http` (8080) are the correct configuration format, but the image's port 8080 has not been confirmed to expose Prometheus-format metrics. The ServiceMonitor is a placeholder for when that endpoint is confirmed or a Prometheus-compatible metrics sidecar is added.
+The scrape path `/metrics` and port `http` (8080) are the correct configuration format. Two preconditions must hold before enabling:
+
+1. **Prometheus Operator CRDs must be installed.** The `ServiceMonitor` CRD (`monitoring.coreos.com/v1`) does not exist in a cluster unless the Prometheus Operator (or kube-prometheus-stack) has been deployed. Applying the chart with `serviceMonitor.enabled = true` before the CRD exists fails with a "no matches for kind ServiceMonitor" error.
+2. **The image must expose a real Prometheus `/metrics` endpoint.** The confirmed behaviour of the current image is that port 8080 is a catch-all returning HTTP 200 for every path — a scrape of `/metrics` succeeds but returns no Prometheus-format content. If the application exposes metrics on a dedicated port, add a second container port and point `serviceMonitor.port` at it before enabling.
 
 ---
 
@@ -644,6 +675,10 @@ The same conditional pattern applies to both `ingress` and `gateway`: when `enab
 
 The `gateway.tls.issuerKind` field has an additional enum constraint: only `ClusterIssuer` and `Issuer` are accepted. These are the two cert-manager issuer resource types; any other value would be accepted by the Kubernetes API but silently ignored by cert-manager.
 
+### `minLength: 1` on host fields
+
+Both `ingress.host` and `gateway.host` carry a `minLength: 1` constraint in addition to the `required` conditional. The `required` keyword prevents the field from being absent when `enabled = true`, but without `minLength: 1` an empty string (`""`) passes schema validation and reaches the template, where it renders a structurally valid but functionally useless Ingress or HTTPRoute with a blank hostname. `minLength: 1` catches this at `helm lint` / `helm install` time before any resource is applied.
+
 ### `serviceAccount.automountToken`
 
 Validated as a boolean. The schema does not enforce a default value ŌĆö that lives in `values.yaml` ŌĆö but it prevents non-boolean values (strings like `"false"`, integers) from silently passing through and being misinterpreted by the Kubernetes API.
@@ -658,8 +693,9 @@ Four overlays are provided. The `values-aws.yaml` and `values-gcp.yaml` overlays
 
 ```yaml
 serviceAccount:
-  annotations:
-    eks.amazonaws.com/role-arn: ""    # set via --set at deploy time
+  # Supply via --set only if the workload needs AWS API access:
+  #   --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=<IRSA_ROLE_ARN>
+  annotations: {}
 
 storageClassName: gp3
 
@@ -676,7 +712,7 @@ nodeSelector:
   kubernetes.io/os: linux
 ```
 
-**`eks.amazonaws.com/role-arn`**: The EKS pod identity webhook reads this annotation on the ServiceAccount and injects `AWS_ROLE_ARN` and `AWS_WEB_IDENTITY_TOKEN_FILE` into all pods running under it. The actual ARN comes from the Terraform `modules/irsa` output for the workload's IRSA role.
+**`serviceAccount.annotations`**: Empty by default. Set `eks.amazonaws.com/role-arn` at deploy time only when the workload needs AWS API access. The EKS pod identity webhook reads this annotation and injects `AWS_ROLE_ARN` and `AWS_WEB_IDENTITY_TOKEN_FILE` into all pods running under the ServiceAccount. The actual ARN comes from the Terraform `modules/irsa` output for the workload's IRSA role. An empty-string value for the annotation key is not pre-seeded in the overlay — it creates no IAM binding and gives a false impression that one exists.
 
 **`cert-manager.io/cluster-issuer: letsencrypt-prod`**: cert-manager watches Ingress resources for this annotation. When found, it creates a CertificateRequest to the named ClusterIssuer, completes the ACME HTTP-01 challenge through ingress-nginx, and writes the resulting certificate into `sre-workload-tls`. The ClusterIssuers are created by `modules/k8s-platform` when `acme_email` is set. Use `letsencrypt-staging` to validate ACME configuration before switching to `letsencrypt-prod`.
 
@@ -688,8 +724,9 @@ nodeSelector:
 
 ```yaml
 serviceAccount:
-  annotations:
-    iam.gke.io/gcp-service-account: ""    # set via --set at deploy time
+  # Supply via --set only if the workload needs GCP API access:
+  #   --set serviceAccount.annotations."iam\.gke\.io/gcp-service-account"=<GSA_EMAIL>
+  annotations: {}
 
 storageClassName: standard-rwo
 
@@ -706,7 +743,7 @@ nodeSelector:
   kubernetes.io/os: linux
 ```
 
-**`iam.gke.io/gcp-service-account`**: GKE's metadata proxy reads this annotation and issues GCP access tokens for the named Google Service Account to pods running under this ServiceAccount. The GSA email comes from the Terraform `modules/workload-identity` output.
+**`serviceAccount.annotations`**: Empty by default. Set `iam.gke.io/gcp-service-account` at deploy time only when the workload needs GCP API access. GKE's metadata proxy reads this annotation and issues GCP access tokens for the named Google Service Account to pods running under this ServiceAccount. The GSA email comes from the Terraform `modules/workload-identity` output. An empty-string value for the annotation key is not pre-seeded in the overlay — it creates no Workload Identity binding and gives a false impression that one exists.
 
 **`storageClassName: standard-rwo`**: GKE's `standard-rwo` (Read-Write Once) storage class provisions `pd-ssd`-backed Persistent Disks with `ReadWriteOnce` access mode.
 
@@ -716,8 +753,9 @@ nodeSelector:
 
 ```yaml
 serviceAccount:
-  annotations:
-    eks.amazonaws.com/role-arn: ""
+  # Supply via --set only if the workload needs AWS API access:
+  #   --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=<IRSA_ROLE_ARN>
+  annotations: {}
 
 storageClassName: gp3
 
@@ -757,8 +795,9 @@ helm install sre-workload . \
 
 ```yaml
 serviceAccount:
-  annotations:
-    iam.gke.io/gcp-service-account: ""
+  # Supply via --set only if the workload needs GCP API access:
+  #   --set serviceAccount.annotations."iam\.gke\.io/gcp-service-account"=<GSA_EMAIL>
+  annotations: {}
 
 storageClassName: standard-rwo
 
@@ -818,13 +857,13 @@ helm install sre-workload . \
 | `autoscaling.maxReplicas` | `10` | ŌĆö | ŌĆö |
 | `autoscaling.targetCPUUtilizationPercentage` | `70` | ŌĆö | ŌĆö |
 | `autoscaling.targetMemoryUtilizationPercentage` | `80` | ŌĆö | ŌĆö |
-| `podDisruptionBudget.minAvailable` | `1` | ŌĆö | ŌĆö |
+| `podDisruptionBudget.minAvailable` | `2` | ŌĆö | ŌĆö |
 | `rollout.maxUnavailable` | `0` | ŌĆö | ŌĆö |
 | `rollout.maxSurge` | `25%` | ŌĆö | ŌĆö |
 | `topologySpread.topologyKey` | `topology.kubernetes.io/zone` | ŌĆö | ŌĆö |
 | `topologySpread.whenUnsatisfiable` | `ScheduleAnyway` | ŌĆö | ŌĆö |
 | `serviceAccount.automountToken` | `false` | ŌĆö | ŌĆö |
-| `serviceAccount.annotations` | `{}` | `eks.amazonaws.com/role-arn: ""` | `iam.gke.io/gcp-service-account: ""` |
+| `serviceAccount.annotations` | `{}` | `{}` (supply ARN via `--set` only when needed) | `{}` (supply GSA email via `--set` only when needed) |
 | `podSecurityContext.runAsUser` | `65532` | ŌĆö | ŌĆö |
 | `securityContext.readOnlyRootFilesystem` | `true` | ŌĆö | ŌĆö |
 | `networkPolicy.enabled` | `true` | — | — |

@@ -16,7 +16,7 @@ This module builds everything that has to exist before an EKS cluster can be cre
 
 ### Resource inventory
 
-With the default configuration in `envs/aws-fresh` вҖ” three availability zones, `single_nat_gateway = false` вҖ” the module creates 22 AWS resources:
+With the default configuration in `envs/aws-fresh` вҖ” three availability zones, `single_nat_gateway = false` вҖ” the module creates 27 AWS resources:
 
 | Resource type | Count | Names (defaults) |
 |---|---|---|
@@ -32,6 +32,11 @@ With the default configuration in `envs/aws-fresh` вҖ” three availability zo
 | `aws_route_table` (private) | 3 | `e2b-sre-fresh-private-rt-us-east-1{a,b,c}` |
 | `aws_route` (private NAT) | 3 | *(one default route per private RT вҶ’ local NAT GW)* |
 | `aws_route_table_association` (private) | 3 | *(one per private subnet)* |
+| `aws_iam_role` (flow logs) | 1 | `e2b-sre-fresh-vpc-flow-logs` |
+| `aws_iam_role_policy` (flow logs) | 1 | `e2b-sre-fresh-vpc-flow-logs` |
+| `aws_cloudwatch_log_group` (flow logs) | 1 | `/aws/vpc/flow-logs/e2b-sre-fresh` |
+| `aws_flow_log` | 1 | `e2b-sre-fresh-flow-logs` |
+| `aws_default_security_group` | 1 | `e2b-sre-fresh-default-sg-locked` |
 
 ---
 
@@ -250,6 +255,44 @@ Each private subnet gets its own route table rather than sharing one, so each ca
 
 When `single_nat_gateway = true`, all three private route tables are created but each points to the single shared NAT gateway вҖ” the structure is the same, only the target changes.
 
+#### VPC Flow Logs (`aws_iam_role.flow_logs`, `aws_iam_role_policy.flow_logs`, `aws_cloudwatch_log_group.flow_logs`, `aws_flow_log.this`)
+
+```
+enable_flow_logs:         true   (default; set false to disable)
+traffic_type:             ALL
+log_destination:          CloudWatch Logs  /aws/vpc/flow-logs/e2b-sre-fresh
+retention_in_days:        365
+```
+
+VPC Flow Logs capture metadata for every IP packet accepted or rejected across the VPC — source and destination IP, port, protocol, packet count, byte count, and the action taken (ACCEPT or REJECT). They are cheap relative to their forensic value: flow log data is routinely the first resource consulted during a security incident, network-level debugging session, or compliance audit.
+
+Four resources implement flow logging:
+
+**`aws_iam_role.flow_logs`** creates a service role with a trust policy allowing `vpc-flow-logs.amazonaws.com` to assume it. This role is what VPC Flow Logs uses to write records to CloudWatch.
+
+**`aws_iam_role_policy.flow_logs`** attaches a minimal inline policy granting the flow-log service `logs:CreateLogGroup`, `logs:CreateLogStream`, `logs:PutLogEvents`, and the two Describe variants. This is the minimum required; no broader CloudWatch permissions are granted.
+
+**`aws_cloudwatch_log_group.flow_logs`** creates the destination log group at `/aws/vpc/flow-logs/<name>`. The 365-day retention policy matches the EKS control-plane log group (see section 2) and satisfies common compliance baselines. Disable or adjust via `flow_logs_retention_days`.
+
+**`aws_flow_log.this`** enables flow logging on the VPC for `ALL` traffic (both ACCEPT and REJECT events). Logging only `REJECT` events would miss accepted traffic to legitimate services, which is equally valuable for mapping actual communication paths. The `log_destination_type` is `cloud-watch-logs`; S3 delivery is an alternative for long-term archival or cross-account aggregation.
+
+Set `enable_flow_logs = false` to skip all four resources (e.g., for minimal cost environments where a pre-existing VPC-level flow log already captures the same data).
+
+#### Default Security Group lockdown (`aws_default_security_group`)
+
+```
+vpc_id:   aws_vpc.this.id
+ingress:  (none)
+egress:   (none)
+```
+
+Every AWS VPC ships with a default security group that cannot be deleted. Its default rules — allow all inbound from members of the same group, allow all outbound — mean any EC2 resource inadvertently launched without an explicit security group assignment inherits unrestricted network access.
+
+`aws_default_security_group` claims ownership of the VPC's default security group and removes all rules by declaring no `ingress {}` or `egress {}` blocks. After this resource is applied, any resource placed in the default security group is completely isolated — all traffic is denied. This is the correct failure mode: a misconfigured resource should not accidentally be reachable.
+
+This satisfies the CKV2_AWS_12 control in most Terraform security scanners (Checkov, tfsec). It has no impact on any resource that uses an explicitly declared security group, which every resource in this deployment does.
+
+
 ---
 
 ### Module outputs
@@ -338,14 +381,15 @@ One managed policy covers all of this. Using a managed policy rather than an inl
 
 ```
 name:               /aws/eks/e2b-sre-fresh/cluster
-retention_in_days:  90
+retention_in_days:  365   (configurable via var.log_retention_days; default satisfies ≥1yr compliance baselines)
+kms_key_id:         <CMK ARN — same key used for EKS secrets envelope encryption>
 ```
 
 EKS does not send control plane logs anywhere by default. Enabling them requires both an explicit log group and a list of log types on the cluster resource. The log group must exist before the cluster is created — enforced by the `depends_on = [aws_cloudwatch_log_group.cluster]` on `aws_eks_cluster.this`.
 
 The name `/aws/eks/<cluster-name>/cluster` is the path EKS expects. Using any other name would cause the log delivery to fail silently.
 
-**Why 90-day retention.** Without an explicit retention policy, CloudWatch log groups default to "never expire." A cluster generating continuous control plane logs with no expiry accrues storage costs indefinitely. 90 days provides a generous window for incident investigation and compliance needs without unbounded accumulation. Adjust to match the customer's retention requirements.
+**Retention and KMS encryption.** Without an explicit retention policy, CloudWatch log groups default to "never expire," accruing storage costs indefinitely. The default of 365 days satisfies common compliance baselines (SOC 2, PCI-DSS, HIPAA) that require ≥1 year of audit log retention. Adjust via `log_retention_days`. The log group is encrypted with the same CMK as EKS secrets envelope encryption — `kms_key_id = local.kms_key_arn` — which means the KMS key policy grants `logs.<region>.amazonaws.com` the minimum permissions needed (`Encrypt`, `Decrypt`, `ReEncrypt*`, `GenerateDataKey*`, `DescribeKey`), scoped via `kms:EncryptionContext:aws:logs:arn` to this specific log group ARN only.
 
 **The five log types** set in `enabled_cluster_log_types`:
 
@@ -1032,8 +1076,9 @@ arch:                   amd64
 instance-category:      [c, m, r]
 instance-generation:    > 4
 limits.cpu:             1000
-consolidationPolicy:    WhenEmptyOrUnderutilized
-consolidateAfter:       30s
+limits.memory:          2000Gi
+consolidationPolicy:    WhenEmpty
+consolidateAfter:       5m
 ```
 
 NodePool is the cluster-agnostic half of Karpenter's configuration. It answers "what kind of instance and when to act" — instance selection constraints, capacity limits, and disruption behaviour.
@@ -1045,9 +1090,9 @@ NodePool is the cluster-agnostic half of Karpenter's configuration. It answers "
 - `instance-category: [c, m, r]`: Compute-optimized, general-purpose, and memory-optimized families. Excludes storage-optimized (d, i), accelerated (p, g, inf), and HPC (hpc) families that are inappropriate for a web workload.
 - `instance-generation: Gt 4`: Fifth generation and newer (m5+, c5+, r5+). Older generations have slower processors, lower network throughput, and no Nitro system hypervisor improvements.
 
-**`limits.cpu: 1000`.** A hard ceiling on the total vCPU count across all nodes this NodePool provisions. With m6i.large instances (2 vCPU each), this caps the pool at 500 nodes. The limit exists as a safety rail: without it, a misconfigured workload with very high resource requests could trigger Karpenter to provision hundreds of nodes before anyone notices. Alerts on Karpenter's node count metric should accompany this limit in production.
+**`limits.cpu: 1000` and `limits.memory: 2000Gi`.** Hard ceilings on the total vCPU count and total memory across all nodes this NodePool provisions. With m6i.large instances (2 vCPU, 8 GiB each), the CPU limit caps the pool at 500 nodes and the memory limit caps it at 250 nodes — the effective ceiling is the lower of the two. Both limits exist as safety rails: without them, a misconfigured workload with very high resource requests could trigger Karpenter to provision hundreds of nodes before anyone notices. Alerts on Karpenter's node count metric should accompany these limits in production.
 
-**Disruption.** `consolidationPolicy: WhenEmptyOrUnderutilized` instructs Karpenter to both remove completely empty nodes and reschedule pods to consolidate partially utilised nodes onto fewer instances. `consolidateAfter: 30s` adds a short delay before acting on a consolidation candidate — this prevents Karpenter from reacting to transient conditions (e.g., a pod that momentarily becomes reschedulable during a rolling update) and thrashing nodes unnecessarily.
+**Disruption.** `consolidationPolicy: WhenEmpty` instructs Karpenter to remove nodes only when they have no running pods — it does not evict pods from underutilised nodes to bin-pack them onto fewer instances. The alternative, `WhenEmptyOrUnderutilized`, triggers live pod eviction for consolidation, which causes continuous disruption churn on a low-replica workload where pods are almost always present on every node. `WhenEmpty` is the safer default: nodes are reclaimed as workloads scale down naturally, without any forced pod movement. `consolidateAfter: 5m` (up from 30s) adds a generous delay before Karpenter acts on a candidate — this prevents reaction to transient conditions such as a pod temporarily unscheduled during a rolling update.
 
 **`depends_on = [kubectl_manifest.ec2_node_class]`.** The NodePool references the EC2NodeClass by name in its `nodeClassRef`. The EC2NodeClass must exist before the NodePool is created, or the NodePool's admission webhook rejects it.
 
@@ -1102,5 +1147,5 @@ interruption_queue_name       → already wired into the Helm release; exposed i
 | `wait = false` on Helm release | EC2NodeClass and NodePool manifests applied before CRDs are registered; both `kubectl_manifest` resources fail |
 | `kubectl_manifest` replaced with `kubernetes_manifest` | Plan fails: "no matches for CRD" because the official provider validates at plan time before the chart has installed the CRDs |
 | Interruption queue not created | Spot nodes receive no warning before termination; pods experience abrupt failure; PDB guarantees bypassed |
-| `limits.cpu` not set | Karpenter has no ceiling on node count; a misbehaving HPA or resource request can trigger unbounded EC2 spend |
+| `limits.cpu` or `limits.memory` not set | Karpenter has no ceiling on node count or total capacity; a misbehaving HPA or resource request can trigger unbounded EC2 spend |
 | Karpenter and cluster-autoscaler both installed | Both controllers react to the same unschedulable pods; the autoscaler raises ASG desired count, Karpenter launches separate instances, the autoscaler's new nodes may be immediately consolidated by Karpenter; node churn and unpredictable costs |
