@@ -6,12 +6,10 @@
 |---|---|
 | AWS: Fresh VPC + fresh EKS cluster | **Fully built** — `envs/aws-fresh` |
 | AWS: Existing/BYO VPC + fresh EKS cluster | **Fully built** — `envs/aws-existing-vpc` |
-| AWS: Existing VPC + existing/BYO EKS cluster | Module exists (`modules/cluster/aws-eks-existing`), no composed env yet — see below |
+| AWS: Existing VPC + existing/BYO EKS cluster | **Fully built** — `envs/aws-existing-cluster` |
 | GCP: Fresh VPC + fresh GKE cluster | **Fully built** — `envs/gcp-fresh` |
-| GCP: Existing/BYO VPC or cluster | Modules exist (`modules/network/gcp-existing`, `modules/cluster/gcp-gke-existing`), no composed env yet — same status as the AWS BYO-cluster gap |
+| GCP: Existing/BYO VPC or cluster | Modules exist (`modules/network/gcp-existing`, `modules/cluster/gcp-gke-existing`), no composed env yet |
 | Azure | Not started |
-
-Being explicit about this rather than quietly shipping only the two envs and calling it "done": `modules/cluster/aws-eks-existing` is real code (data-source lookups + the assumed-existing-OIDC-provider documented in its own comments), just not yet composed into a full `envs/aws-existing-cluster` example. Wiring that up is mechanical — copy `envs/aws-existing-vpc`, swap `module "cluster"` to source `../../modules/cluster/aws-eks-existing`, drop the `node_pool` module entirely if the customer's existing node groups are already sized/managed, and skip straight to `k8s_platform`.
 
 ## Validation performed
 
@@ -53,8 +51,8 @@ terraform plan   # will fail without real AWS credentials configured, but a
 - **Cluster module creates a private, VPC-native, Workload-Identity-enabled regional cluster** with a throwaway default node pool immediately removed (`remove_default_node_pool = true`) — the standard Terraform+GKE pattern to keep all real node pool state in `modules/node-pool/gcp-gke` instead of fighting the cluster resource over it, mirroring why the AWS node pool is a separate module from the EKS cluster module.
 - **Provider auth uses `google_client_config`'s access token**, refreshed on every plan/apply, rather than an exec plugin — GCP's ecosystem doesn't have as clean a `aws eks get-token`-style plugin in common use for this, so the token-data-source pattern is the standard approach instead.
 
-**Not yet done, consistent with the AWS side's gaps:**
-- `modules/cluster/gcp-gke-existing` and `modules/network/gcp-existing` are real code (data lookups + the same fail-fast tag/range validation approach as the AWS BYO-VPC module), but no composed `envs/gcp-existing-*` example exists yet — same status as `modules/cluster/aws-eks-existing` on the AWS side.
+**Not yet done:**
+- `modules/cluster/gcp-gke-existing` and `modules/network/gcp-existing` are real code (data lookups + the same fail-fast tag/range validation approach as the AWS BYO-VPC module), but no composed `envs/gcp-existing-*` example exists yet.
 - No live GCP deployment was performed — same no-live-cloud-testing constraint as everything else in this tree. Validated the same way: brace-balance check across every file, plus manual cross-reference of every module output against every place it's consumed. Run a real `terraform init && validate` (and ideally `plan` against a real GCP project) before trusting this further.
 
 ## Bottlerocket
