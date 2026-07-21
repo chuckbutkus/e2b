@@ -370,11 +370,15 @@ The same shared module used by the AWS path. On GCP, it is called with `install_
 
 ### What is and is not installed on GCP
 
-| Chart | Installed | Reason |
+| Resource | Installed | Reason |
 |---|---|---|
 | metrics-server | ✅ yes | HPA still requires a metrics source on GKE |
 | ingress-nginx | ✅ yes | The same Nginx ingress controller works on GKE |
 | cluster-autoscaler | ❌ no | GKE native autoscaler handles this; running both would conflict |
+| NGINX Gateway Fabric | ⬜ opt-in | `install_nginx_gateway_fabric = true`; disabled by default |
+| cert-manager | ✅ yes (default) | TLS certificate lifecycle management; disable if already present |
+| ClusterIssuers (staging + prod) | ⬜ when `acme_email` set | Let's Encrypt issuers; requires a non-empty `acme_email` variable |
+| external-dns | ⬜ opt-in | `install_external_dns = true`; creates Cloud DNS records |
 
 ### GCP-specific behaviour
 
@@ -384,7 +388,13 @@ The same shared module used by the AWS path. On GCP, it is called with `install_
 
 The practical result is that ingress-nginx on GKE receives an external IP that routes through a GCP NLB to the ingress controller pods, which then route HTTP/S traffic to Kubernetes Services based on Ingress rules. The behaviour is the same as on AWS; only the underlying cloud load balancer product differs.
 
-**`depends_on = [module.node_pool]`** applies for the same reason as on AWS: Helm chart installation requires Ready nodes to schedule the metrics-server and ingress-nginx pods onto.
+**NGINX Gateway Fabric** installs identically to the AWS path. The NGF controller and the `nginx` GatewayClass behave the same on GKE as on EKS. GKE also ships its own Gateway API implementation (the `gke-l7-*` GatewayClasses), which integrates with Google Cloud Load Balancers at a deeper level. The `values-gcp-gateway.yaml` Helm overlay uses the NGF-based GatewayClass (`nginx`) for consistency with the AWS path; operators who prefer the GKE-native controller can override `gateway.className`.
+
+**cert-manager** installs identically to the AWS path. The ACME HTTP-01 solver uses ingress-nginx by default (`http01.ingress`), or the `gatewayHTTPRoute` solver via `acme-gateway` when NGF is the sole HTTP controller. The solver selection logic is the same as on AWS — it is controlled by `use_gateway_acme_solver` in the module and depends on which HTTP controller is installed, not on which cloud provider the cluster runs on.
+
+**external-dns** on GCP uses the Google Cloud DNS provider (`provider = google`) and requires a `roles/dns.admin` binding on the project's Cloud DNS API. In `gcp-fresh`, a `module.external_dns_wi` Workload Identity binding grants `roles/dns.admin` to the external-dns ServiceAccount. The Workload Identity annotation (`iam.gke.io/gcp-service-account`) is passed to the chart via `external_dns_service_account_annotations`. All other external-dns behaviour (upsert-only policy, txt owner ID, zone filter) is identical to the AWS path.
+
+**`depends_on = [module.node_pool]`** applies for the same reason as on AWS: Helm chart installation requires Ready nodes to schedule controller pods onto.
 
 ---
 

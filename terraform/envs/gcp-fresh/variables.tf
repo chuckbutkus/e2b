@@ -76,6 +76,12 @@ variable "acme_email" {
   default     = ""
 }
 
+variable "install_nginx_gateway_fabric" {
+  description = "Install NGINX Gateway Fabric alongside (or instead of) ingress-nginx. Disabled by default."
+  type        = bool
+  default     = false
+}
+
 variable "install_external_dns" {
   description = "Install external-dns and create a Workload Identity binding with Cloud DNS admin access. Disabled by default."
   type        = bool

@@ -1,0 +1,38 @@
+# Overlay for GCP (GKE) using the Kubernetes Gateway API + NGINX Gateway Fabric.
+# Use instead of values-gcp.yaml when install_nginx_gateway_fabric=true in Terraform.
+#
+# Apply with:
+#   helm install sre-workload . \
+#     -f values.yaml \
+#     -f values-gcp-gateway.yaml \
+#     --set serviceAccount.annotations."iam\.gke\.io/gcp-service-account"=<GSA_EMAIL> \
+#     --set gateway.host=sre.example.com
+#
+# Note: GKE also has its own Gateway API implementation (via the GKE Gateway
+# controller). This overlay uses NGINX Gateway Fabric for consistency with
+# the AWS deployment. To use the GKE-native Gateway controller instead,
+# set gateway.className to the appropriate GKE GatewayClass (e.g. "gke-l7-global-external-managed").
+
+serviceAccount:
+  annotations:
+    iam.gke.io/gcp-service-account: ""
+
+storageClassName: standard-rwo
+
+# Disable Ingress — Gateway API mode uses Gateway + HTTPRoute instead.
+ingress:
+  enabled: false
+
+gateway:
+  enabled: true
+  className: nginx   # GatewayClass created by NGINX Gateway Fabric
+  host: ""           # set via --set gateway.host=sre.example.com
+  createGateway: true
+  tls:
+    enabled: true
+    secretName: ""   # defaults to <fullname>-tls; cert-manager fills this
+    issuerName: letsencrypt-prod   # ClusterIssuer from modules/k8s-platform
+    issuerKind: ClusterIssuer
+
+nodeSelector:
+  kubernetes.io/os: linux

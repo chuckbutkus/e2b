@@ -53,6 +53,34 @@
       },
       "if": { "properties": { "enabled": { "const": true } } },
       "then": { "required": ["host"] }
+    },
+    "gateway": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "className": { "type": "string" },
+        "host": { "type": "string" },
+        "createGateway": { "type": "boolean" },
+        "parentRef": {
+          "type": "object",
+          "properties": {
+            "name": { "type": "string" },
+            "namespace": { "type": "string" },
+            "sectionName": { "type": "string" }
+          }
+        },
+        "tls": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "secretName": { "type": "string" },
+            "issuerName": { "type": "string" },
+            "issuerKind": { "type": "string", "enum": ["ClusterIssuer", "Issuer"] }
+          }
+        }
+      },
+      "if": { "properties": { "enabled": { "const": true } } },
+      "then": { "required": ["host"] }
     }
   }
 }

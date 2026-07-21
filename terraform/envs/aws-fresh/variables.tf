@@ -110,6 +110,12 @@ variable "acme_email" {
   default     = ""
 }
 
+variable "install_nginx_gateway_fabric" {
+  description = "Install NGINX Gateway Fabric alongside (or instead of) ingress-nginx. Disabled by default."
+  type        = bool
+  default     = false
+}
+
 variable "install_external_dns" {
   description = "Install external-dns and create an IRSA role with Route 53 write access. Disabled by default — enable once the customer's hosted zone is ready and its ID is known."
   type        = bool

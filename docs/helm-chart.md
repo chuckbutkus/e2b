@@ -1,4 +1,4 @@
-# sre-workload Helm Chart — Reference
+# sre-workload Helm Chart ŌĆö Reference
 
 **Chart path**: `helm/sre-workload`  
 **Image**: `ghcr.io/e2b-dev/sre-interview:latest`
@@ -30,7 +30,7 @@ helm install sre-workload . \
 Later sources override earlier ones for the same key. `values.yaml` establishes all defaults and is the single source of truth for every value the chart uses. `values-{cloud}.yaml` overrides only the fields that differ per cloud (the pod identity annotation key, the StorageClass name, ingress enablement, and the OS node selector). The `--set` flags supply values that are known only at deploy time (the IRSA ARN or GSA email comes from Terraform output, and the hostname is per-customer).
 
 This model means:
-- `values.yaml` alone is sufficient for local `kind` testing — no cloud credentials or identity wiring needed.
+- `values.yaml` alone is sufficient for local `kind` testing ŌĆö no cloud credentials or identity wiring needed.
 - Cloud-specific fields are explicit and auditable in overlay files, not scattered through template conditionals.
 - Adding a new cloud is a new overlay file, not a change to any template.
 
@@ -41,15 +41,18 @@ This model means:
 | Object | Kind | Always created | Condition |
 |---|---|---|---|
 | `ServiceAccount` | `v1` | if `serviceAccount.create=true` | default: yes |
-| `Deployment` | `apps/v1` | ✅ always | — |
-| `Service` | `v1` | ✅ always | — |
+| `Deployment` | `apps/v1` | Ō£ģ always | ŌĆö |
+| `Service` | `v1` | Ō£ģ always | ŌĆö |
 | `HorizontalPodAutoscaler` | `autoscaling/v2` | if `autoscaling.enabled=true` | default: yes |
 | `PodDisruptionBudget` | `policy/v1` | if `podDisruptionBudget.enabled=true` | default: yes |
-| `Ingress` | `networking.k8s.io/v1` | if `ingress.enabled=true` | default: no; cloud overlays enable it |
+| `Ingress` | `networking.k8s.io/v1` | if `ingress.enabled=true` | default: no; standard cloud overlays enable it |
+| `Gateway` | `gateway.networking.k8s.io/v1` | if `gateway.enabled=true` AND `gateway.createGateway=true` | default: no; gateway overlays enable it |
+| `HTTPRoute` | `gateway.networking.k8s.io/v1` | if `gateway.enabled=true` | default: no; gateway overlays enable it |
+| `Certificate` | `cert-manager.io/v1` | if `gateway.enabled=true` AND `gateway.tls.enabled=true` | default: no; gateway overlays enable it |
 | `NetworkPolicy` | `networking.k8s.io/v1` | if `networkPolicy.enabled=true` | default: yes |
 | `ServiceMonitor` | `monitoring.coreos.com/v1` | if `serviceMonitor.enabled=true` | default: no |
 
-With defaults and either cloud overlay applied, the chart produces seven objects: ServiceAccount, Deployment, Service, HPA, PDB, Ingress, and NetworkPolicy.
+The chart supports two mutually exclusive routing modes. With the standard cloud overlays (`values-aws.yaml` / `values-gcp.yaml`), it produces seven objects: ServiceAccount, Deployment, Service, HPA, PDB, Ingress, and NetworkPolicy. With the gateway overlays (`values-aws-gateway.yaml` / `values-gcp-gateway.yaml`), Ingress is replaced by Gateway + HTTPRoute + Certificate ŌĆö nine objects total when TLS is enabled.
 
 ---
 
@@ -57,9 +60,9 @@ With defaults and either cloud overlay applied, the chart produces seven objects
 
 Before describing the chart, the image's actual runtime behaviour:
 
-**Port 8080** is the application port. Every path — `/healthz`, `/readyz`, `/this-path-does-not-exist`, and all others — returns `200 OK`. This is a catch-all router, not a differentiated health endpoint. Liveness and readiness probes both return `200` on every path; the probes are valid signals that the HTTP server is alive, but they do not verify that the workload is actually healthy in any deeper sense. All chart defaults (`service.port: 8080`, `probes.path: /healthz`, `probes.readyPath: /readyz`) reflect this confirmed behaviour.
+**Port 8080** is the application port. Every path ŌĆö `/healthz`, `/readyz`, `/this-path-does-not-exist`, and all others ŌĆö returns `200 OK`. This is a catch-all router, not a differentiated health endpoint. Liveness and readiness probes both return `200` on every path; the probes are valid signals that the HTTP server is alive, but they do not verify that the workload is actually healthy in any deeper sense. All chart defaults (`service.port: 8080`, `probes.path: /healthz`, `probes.readyPath: /readyz`) reflect this confirmed behaviour.
 
-**Port 9090** is a second HTTP server labelled "internal server" in the container's own startup log. Unlike port 8080, it returns proper `404` responses on unknown paths — it has a real router. Its purpose is unconfirmed: it is not a Prometheus `/metrics` endpoint and is not the standard `net/http/pprof` mount. This port is deliberately not exposed anywhere in the chart: no Service port, no Ingress rule, no NetworkPolicy allow rule. If its purpose is identified later, the addition is minimal — a second container port, a matching Service port, and a scoped NetworkPolicy rule.
+**Port 9090** is a second HTTP server labelled "internal server" in the container's own startup log. Unlike port 8080, it returns proper `404` responses on unknown paths ŌĆö it has a real router. Its purpose is unconfirmed: it is not a Prometheus `/metrics` endpoint and is not the standard `net/http/pprof` mount. This port is deliberately not exposed anywhere in the chart: no Service port, no Ingress rule, no NetworkPolicy allow rule. If its purpose is identified later, the addition is minimal ŌĆö a second container port, a matching Service port, and a scoped NetworkPolicy rule.
 
 ---
 
@@ -83,7 +86,7 @@ automountServiceAccountToken: false
 
 The ServiceAccount is the Kubernetes identity the workload pods run as. Two properties matter most:
 
-**`automountServiceAccountToken: false`** is set at both the ServiceAccount level and the pod spec level (see Deployment below). The Kubernetes default is `true` — every pod receives a projected JWT for the in-cluster API server, mounted at `/var/run/secrets/kubernetes.io/serviceaccount/token`, even if the workload never calls the API server. For workloads that use AWS IRSA or GCP Workload Identity, this default token is unnecessary: IRSA injects its own projected token via the EKS pod identity webhook; GKE's metadata proxy issues tokens on demand. Having both a mounted API server token and a cloud-identity token in the same pod is redundant and slightly increases the blast radius if a pod is compromised. Setting both fields to `false` ensures the token is not mounted.
+**`automountServiceAccountToken: false`** is set at both the ServiceAccount level and the pod spec level (see Deployment below). The Kubernetes default is `true` ŌĆö every pod receives a projected JWT for the in-cluster API server, mounted at `/var/run/secrets/kubernetes.io/serviceaccount/token`, even if the workload never calls the API server. For workloads that use AWS IRSA or GCP Workload Identity, this default token is unnecessary: IRSA injects its own projected token via the EKS pod identity webhook; GKE's metadata proxy issues tokens on demand. Having both a mounted API server token and a cloud-identity token in the same pod is redundant and slightly increases the blast radius if a pod is compromised. Setting both fields to `false` ensures the token is not mounted.
 
 **`annotations`** is empty in `values.yaml` and populated in two ways:
 
@@ -102,7 +105,7 @@ The ServiceAccount is the Kubernetes identity the workload pods run as. Two prop
 apiVersion: apps/v1
 kind: Deployment
 spec:
-  # replicas field omitted — HPA owns the count
+  # replicas field omitted ŌĆö HPA owns the count
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -162,7 +165,7 @@ maxUnavailable: 0
 maxSurge: 25%
 ```
 
-`maxUnavailable: 0` means capacity never drops below the current replica count during a rollout. No pod is removed until a replacement is Running and Ready. Combined with `maxSurge: 25%`, Kubernetes can run up to 25% more pods than the desired count during the transition — at `minReplicas = 3`, that means one extra pod (3 × 25% = 0.75, rounded up to 1). The rollout pattern is: add one new pod, wait for it to pass readiness, remove one old pod, repeat. The `PodDisruptionBudget` (`minAvailable: 1`) is respected throughout because `maxUnavailable: 0` is stricter.
+`maxUnavailable: 0` means capacity never drops below the current replica count during a rollout. No pod is removed until a replacement is Running and Ready. Combined with `maxSurge: 25%`, Kubernetes can run up to 25% more pods than the desired count during the transition ŌĆö at `minReplicas = 3`, that means one extra pod (3 ├Ś 25% = 0.75, rounded up to 1). The rollout pattern is: add one new pod, wait for it to pass readiness, remove one old pod, repeat. The `PodDisruptionBudget` (`minAvailable: 1`) is respected throughout because `maxUnavailable: 0` is stricter.
 
 #### Pod security context
 
@@ -189,13 +192,13 @@ capabilities:
   drop: ["ALL"]
 ```
 
-`allowPrivilegeEscalation: false` prevents a process inside the container from gaining more privileges than its parent — for example, by executing a `setuid` binary or calling `prctl(PR_SET_DUMPABLE)`. This applies even if the container's image contains such binaries.
+`allowPrivilegeEscalation: false` prevents a process inside the container from gaining more privileges than its parent ŌĆö for example, by executing a `setuid` binary or calling `prctl(PR_SET_DUMPABLE)`. This applies even if the container's image contains such binaries.
 
 `readOnlyRootFilesystem: true` mounts the container's root filesystem as read-only. Any attempt to write to a path outside an explicitly declared volume fails with a permission error. This prevents an attacker who achieves code execution from modifying the application binary, writing a cron job, or leaving persistence files. The tradeoff is that any path the application legitimately writes to must be declared as a volume mount.
 
 `capabilities: drop: ["ALL"]` drops all Linux capabilities from the container's capability set. By default, containers retain a small set of capabilities (like `NET_BIND_SERVICE` for binding to ports below 1024). Dropping all of them removes the ability to perform any privileged kernel operation, even if the container runs as root (which it doesn't here). Since the workload listens on port 8080 (above 1024), `NET_BIND_SERVICE` is not needed.
 
-**The `/tmp` volume.** Because `readOnlyRootFilesystem: true` prevents any writes, the template automatically adds an `emptyDir` volume mounted at `/tmp` whenever this setting is true. Many applications — including Go's standard library for certain operations — write temporary files to `/tmp`. Without this mount, such writes fail silently or with a cryptic error. `emptyDir` volumes are node-local, ephemeral, and not shared between pods; they are the correct choice for temporary scratch space.
+**The `/tmp` volume.** Because `readOnlyRootFilesystem: true` prevents any writes, the template automatically adds an `emptyDir` volume mounted at `/tmp` whenever this setting is true. Many applications ŌĆö including Go's standard library for certain operations ŌĆö write temporary files to `/tmp`. Without this mount, such writes fail silently or with a cryptic error. `emptyDir` volumes are node-local, ephemeral, and not shared between pods; they are the correct choice for temporary scratch space.
 
 #### Probes
 
@@ -207,7 +210,7 @@ liveness:  GET /healthz, 15s period, 3 failures, 3s timeout
 
 All three probes use the shared `sre-workload.probeSpec` helper (described below), which renders the correct probe type (HTTP/TCP/exec) based on `probes.type`. The default is `http`.
 
-The **startup probe** runs first and blocks the readiness and liveness probes until it succeeds. It allows 30 failures at 5-second intervals — a 150-second window before Kubernetes kills the container. This window protects slow-starting applications from being killed by a liveness probe that fires before they are ready. Once the startup probe succeeds, it stops running entirely and the other probes take over.
+The **startup probe** runs first and blocks the readiness and liveness probes until it succeeds. It allows 30 failures at 5-second intervals ŌĆö a 150-second window before Kubernetes kills the container. This window protects slow-starting applications from being killed by a liveness probe that fires before they are ready. Once the startup probe succeeds, it stops running entirely and the other probes take over.
 
 The **readiness probe** determines whether a pod receives traffic from the Service. A pod failing readiness is removed from the Service's endpoint list but is not killed. It is given three chances (over 30 seconds) to recover before being removed. The probe fires every 10 seconds; a pod that becomes unhealthy is removed from rotation within 30 seconds. Because the workload's `/readyz` is a catch-all that always returns 200, the probe currently measures only that the HTTP server is alive, not that the workload is actually ready to serve. This is noted as a known limitation.
 
@@ -225,7 +228,7 @@ topologySpreadConstraints:
 
 This constraint asks Kubernetes to distribute the workload's pods evenly across availability zones. `maxSkew: 1` means the difference in pod count between the most-loaded and least-loaded zone may not exceed 1. With `minReplicas = 3` and three zones (both AWS `us-east-1` and GCP `us-east1` have three zones), the scheduler places one pod per zone in the steady state.
 
-`whenUnsatisfiable: ScheduleAnyway` allows the scheduler to violate the constraint if it cannot be satisfied — for example, on a single-node `kind` cluster where there is only one zone. The alternative, `DoNotSchedule`, would leave pods `Pending` indefinitely on clusters that cannot satisfy the zone spread. `ScheduleAnyway` makes the chart usable for local testing without changes, at the cost of a softer guarantee in production.
+`whenUnsatisfiable: ScheduleAnyway` allows the scheduler to violate the constraint if it cannot be satisfied ŌĆö for example, on a single-node `kind` cluster where there is only one zone. The alternative, `DoNotSchedule`, would leave pods `Pending` indefinitely on clusters that cannot satisfy the zone spread. `ScheduleAnyway` makes the chart usable for local testing without changes, at the cost of a softer guarantee in production.
 
 #### Resource requests and limits
 
@@ -234,7 +237,7 @@ requests: { cpu: 100m, memory: 128Mi }
 limits:   { cpu: 500m, memory: 512Mi }
 ```
 
-**Requests** are what the scheduler uses to decide where to place a pod and what the HPA uses to compute utilisation percentages. At 100m CPU and 128Mi memory, the workload's resource footprint is declared to be small. On an m6i.large (2 vCPU, 8 GiB), this allows up to 20 pods by CPU and 64 by memory before the node is saturated — well above the HPA maximum of 10.
+**Requests** are what the scheduler uses to decide where to place a pod and what the HPA uses to compute utilisation percentages. At 100m CPU and 128Mi memory, the workload's resource footprint is declared to be small. On an m6i.large (2 vCPU, 8 GiB), this allows up to 20 pods by CPU and 64 by memory before the node is saturated ŌĆö well above the HPA maximum of 10.
 
 **Limits** cap the maximum resources the container can consume. At 500m CPU (half a core), the workload can burst up to five times its baseline during a spike without being throttled. At 512Mi memory, the container is killed by the OOM killer if it exceeds this value. The 4:1 ratio between limit and request (for both CPU and memory) is deliberately generous, reflecting that the workload's true steady-state consumption is unconfirmed against real traffic.
 
@@ -257,7 +260,7 @@ spec:
       name: http
 ```
 
-The Service is `ClusterIP` — it is reachable only from within the cluster, not from outside. External traffic enters through the Ingress controller, which routes HTTP/S requests to this Service, which forwards them to the pods. Using `ClusterIP` rather than `LoadBalancer` prevents the accidental creation of a cloud load balancer if the Ingress is disabled.
+The Service is `ClusterIP` ŌĆö it is reachable only from within the cluster, not from outside. External traffic enters through the Ingress controller, which routes HTTP/S requests to this Service, which forwards them to the pods. Using `ClusterIP` rather than `LoadBalancer` prevents the accidental creation of a cloud load balancer if the Ingress is disabled.
 
 `targetPort: http` references the named port `http` declared in the Deployment's container spec (`containerPort: 8080, name: http`). Using named ports rather than numeric ones means the container port can be changed in one place (the Deployment) without updating the Service.
 
@@ -306,17 +309,17 @@ spec:
 
 `autoscaling/v2` is the current API version; v1 supports only a single CPU metric. v2 enables both CPU and memory metrics simultaneously, and the `behavior` block for controlling scaling velocity.
 
-**CPU target: 70%.** The HPA keeps average CPU utilisation across all pods below 70% of the declared CPU request (100m). When the average rises above 70m, the HPA adds pods. At 70% of a 100m request, each pod is using 70m CPU. With the 500m CPU limit, there is still significant headroom for the application to absorb additional load between HPA decisions. 70% is a common target — low enough to provide headroom for traffic spikes during the time it takes to provision and start a new pod, high enough not to waste node capacity.
+**CPU target: 70%.** The HPA keeps average CPU utilisation across all pods below 70% of the declared CPU request (100m). When the average rises above 70m, the HPA adds pods. At 70% of a 100m request, each pod is using 70m CPU. With the 500m CPU limit, there is still significant headroom for the application to absorb additional load between HPA decisions. 70% is a common target ŌĆö low enough to provide headroom for traffic spikes during the time it takes to provision and start a new pod, high enough not to waste node capacity.
 
-**Memory target: 80%.** Memory utilisation is a less dynamic signal than CPU — it tends to grow and not shrink between garbage collection cycles. 80% of the 128Mi memory request (102Mi) is the trigger. Memory-based scaling works better when the workload's memory usage scales with load (e.g., per-request caches). For workloads with relatively stable memory use, the CPU metric is the primary driver and the memory metric acts as a backstop.
+**Memory target: 80%.** Memory utilisation is a less dynamic signal than CPU ŌĆö it tends to grow and not shrink between garbage collection cycles. 80% of the 128Mi memory request (102Mi) is the trigger. Memory-based scaling works better when the workload's memory usage scales with load (e.g., per-request caches). For workloads with relatively stable memory use, the CPU metric is the primary driver and the memory metric acts as a backstop.
 
 **Scale-down behavior.** `stabilizationWindowSeconds: 300` prevents scale-down for 5 minutes after the last scale-up event. This dampens the "flapping" pattern where bursty traffic causes rapid scale-up followed immediately by scale-down, which then fails to handle the next burst. The `Percent: 25, periodSeconds: 60` policy limits scale-down to removing at most 25% of pods per minute. With 10 pods, that is at most 2 pods per minute. Scale-down is conservative by design.
 
-**Scale-up behavior.** `stabilizationWindowSeconds: 0` means scale-up is immediate — as soon as the HPA computes that more replicas are needed, it requests them. The `Percent: 100, periodSeconds: 30` policy allows doubling the pod count every 30 seconds. With 3 pods, the sequence during sustained high load is: 3 → 6 → 10 (capped at maxReplicas). Scale-up is aggressive by design: the cost of over-provisioning during a spike is much lower than the cost of a degraded or unavailable service.
+**Scale-up behavior.** `stabilizationWindowSeconds: 0` means scale-up is immediate ŌĆö as soon as the HPA computes that more replicas are needed, it requests them. The `Percent: 100, periodSeconds: 30` policy allows doubling the pod count every 30 seconds. With 3 pods, the sequence during sustained high load is: 3 ŌåÆ 6 ŌåÆ 10 (capped at maxReplicas). Scale-up is aggressive by design: the cost of over-provisioning during a spike is much lower than the cost of a degraded or unavailable service.
 
 **`minReplicas: 3`.** With topology spread across three zones, 3 is the minimum that guarantees one pod per zone. Fewer than 3 would mean a zone has no pods, and requests routed to that zone by a cloud load balancer would fail before the session affinity mechanisms in ingress-nginx redirect them.
 
-**`maxReplicas: 10`.** A soft cap on the total pod count. At 10 pods × 100m CPU request, the workload consumes 1 full vCPU of requested capacity — easily accommodated on three m6i.large nodes. This cap should be revisited based on actual load patterns; the value is a starting point, not a permanent limit.
+**`maxReplicas: 10`.** A soft cap on the total pod count. At 10 pods ├Ś 100m CPU request, the workload consumes 1 full vCPU of requested capacity ŌĆö easily accommodated on three m6i.large nodes. This cap should be revisited based on actual load patterns; the value is a starting point, not a permanent limit.
 
 ---
 
@@ -333,11 +336,11 @@ spec:
     matchLabels: <selector for this Deployment's pods>
 ```
 
-A PodDisruptionBudget constrains voluntary disruptions — operations initiated by humans or controllers, such as node drains, cluster upgrades, and Karpenter consolidations. The PDB does not protect against involuntary disruptions (node failures, OOM kills).
+A PodDisruptionBudget constrains voluntary disruptions ŌĆö operations initiated by humans or controllers, such as node drains, cluster upgrades, and Karpenter consolidations. The PDB does not protect against involuntary disruptions (node failures, OOM kills).
 
 `minAvailable: 1` means at least one pod must remain Running at all times. During a node drain (whether from a cluster-autoscaler scale-in, a Karpenter consolidation, or a node group rolling upgrade), the eviction API checks all PDBs before evicting any pod. If evicting a pod would reduce the available count below `minAvailable`, the eviction is refused until another pod becomes available elsewhere.
 
-With `minReplicas: 3` and the RollingUpdate strategy's `maxUnavailable: 0`, the PDB is a secondary enforcement layer — the Deployment's update strategy already prevents capacity from dropping during rollouts. The PDB governs the node-level operations that happen outside the Deployment controller's scope.
+With `minReplicas: 3` and the RollingUpdate strategy's `maxUnavailable: 0`, the PDB is a secondary enforcement layer ŌĆö the Deployment's update strategy already prevents capacity from dropping during rollouts. The PDB governs the node-level operations that happen outside the Deployment controller's scope.
 
 `minAvailable: 1` is deliberately low rather than, for example, `minAvailable: 2`. A stricter setting risks deadlock: if the cluster needs to drain two nodes simultaneously (e.g., during a full node pool version upgrade) and there are only 3 pods, a `minAvailable: 2` PDB would block both drains indefinitely. With `minAvailable: 1`, the upgrade can proceed.
 
@@ -366,13 +369,116 @@ spec:
                   number: 8080
 ```
 
-The Ingress is disabled by default because `ingress.host` — a per-customer, per-deployment value — is required and there is no sensible default. The cloud overlays set `ingress.enabled: true` but leave `host` empty; the deployer must supply it via `--set ingress.host=...`. The template uses Helm's `required` function on both the `host` field and on the TLS `secretName`, which generates a clear error at render time if either is missing when it should be present.
+The Ingress is disabled by default because `ingress.host` ŌĆö a per-customer, per-deployment value ŌĆö is required and there is no sensible default. The cloud overlays set `ingress.enabled: true` but leave `host` empty; the deployer must supply it via `--set ingress.host=...`. The template uses Helm's `required` function on both the `host` field and on the TLS `secretName`, which generates a clear error at render time if either is missing when it should be present.
 
 `ingressClassName: nginx` routes the Ingress to the `ingress-nginx` controller installed by the k8s-platform module. The AWS overlay notes that `alb` is a valid alternative for customers who prefer native ALB integration. The GCP overlay similarly documents that GKE's Gateway API is an alternative.
 
 `pathType: Prefix` with path `/` matches all requests and forwards them to the workload Service. The workload's catch-all router handles all paths, so no more specific path rules are needed.
 
-**TLS.** When `ingress.tls.enabled = true`, a `tls:` block is added to the Ingress spec. The TLS secret (`ingress.tls.secretName`) must contain a `kubernetes.io/tls` Secret with a valid certificate and private key. The certificate can be provisioned by cert-manager (which watches Ingress resources with the appropriate annotations) or injected by the deployer. Neither cert-manager nor any other certificate management tool is included in this chart — it is assumed to be a cluster-level concern.
+**TLS.** When `ingress.tls.enabled = true`, a `tls:` block is added to the Ingress spec. The cloud overlays set `ingress.annotations["cert-manager.io/cluster-issuer"]: letsencrypt-prod` ŌĆö cert-manager watches Ingress resources for this annotation, creates a Certificate request to the named ClusterIssuer, completes the ACME HTTP-01 challenge through ingress-nginx, and writes the resulting certificate into the Secret named by `ingress.tls.secretName`. cert-manager is installed and the ClusterIssuers are created by the `modules/k8s-platform` Terraform module, not by this chart.
+
+**Ingress vs Gateway API.** Ingress is the established routing mode supported by ingress-nginx (`ingressClassName: nginx`). The Gateway API mode (`gateway.enabled = true`) is the alternative for clusters running NGINX Gateway Fabric. The two modes are not run simultaneously ŌĆö the gateway overlays set `ingress.enabled: false`.
+
+---
+
+### Gateway
+
+**Template**: `templates/gateway.yaml`  
+**Created when**: `gateway.enabled = true` AND `gateway.createGateway = true`  
+**Requires**: NGINX Gateway Fabric installed in the cluster (`install_nginx_gateway_fabric = true` in Terraform); Gateway API CRDs (installed automatically by the NGF Helm chart)
+
+```yaml
+# Rendered with gateway overlay + TLS defaults
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+spec:
+  gatewayClassName: nginx       # GatewayClass created by NGF
+  listeners:
+    - name: http
+      port: 80
+      protocol: HTTP
+      hostname: <gateway.host>  # required; error at render time if absent
+      allowedRoutes:
+        namespaces:
+          from: Same
+    - name: https               # only present when gateway.tls.enabled=true
+      port: 443
+      protocol: HTTPS
+      hostname: <gateway.host>
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: <gateway.tls.secretName>  # cert-manager fills this
+      allowedRoutes:
+        namespaces:
+          from: Same
+```
+
+This chart follows the **per-workload Gateway** pattern: each Helm release owns its own Gateway resource rather than attaching to a shared cluster-level Gateway. This keeps cert rotation, listener configuration, and load balancer lifecycle scoped to the individual workload, which is appropriate for a product that deploys into customer accounts where the existing Gateway topology is unknown.
+
+`allowedRoutes.namespaces.from = Same` on both listeners restricts attachment to HTTPRoutes in the same namespace as the Gateway. This is the minimum required scope for a single-namespace deployment and prevents cross-namespace route injection.
+
+**`gateway.createGateway = false`** is the alternative when a shared Gateway already exists in the cluster. With this option the chart creates only the HTTPRoute (and Certificate, if TLS is enabled); the shared Gateway is managed by the platform team. Set `gateway.parentRef.name` and optionally `gateway.parentRef.namespace` to identify the pre-existing Gateway.
+
+---
+
+### HTTPRoute
+
+**Template**: `templates/httproute.yaml`  
+**Created when**: `gateway.enabled = true`
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+spec:
+  parentRefs:
+    - name: sre-workload        # the Gateway created by this chart
+      namespace: <release namespace>
+      sectionName: https        # "http" when gateway.tls.enabled=false
+  hostnames:
+    - <gateway.host>
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: sre-workload
+          port: 8080
+```
+
+The HTTPRoute attaches to the Gateway via `parentRefs` and routes all traffic for `gateway.host` to the workload Service on port 8080. The `sectionName` field pins the route to a specific listener: `https` when TLS is enabled (so the route only receives traffic that has completed the TLS handshake at the Gateway), `http` when TLS is disabled.
+
+When `gateway.createGateway = false`, `parentRefs` points to `gateway.parentRef.name` in `gateway.parentRef.namespace` (defaulting to the release namespace). `sectionName` is only included when `gateway.parentRef.sectionName` is set ŌĆö omitting it attaches the route to all matching listeners, which is correct for pre-existing shared Gateways where the operator controls listener selection.
+
+**NetworkPolicy compatibility.** The existing NetworkPolicy allows ingress on port 8080 from `from: []` (any in-cluster source). NGF routes traffic from its own pods directly to the workload pods via the Service. Because NGF pods are in a different namespace (`nginx-gateway`), the `from: []` rule is what allows this ŌĆö no additional NetworkPolicy changes are needed for Gateway API mode.
+
+---
+
+### Certificate
+
+**Template**: `templates/certificate.yaml`  
+**Created when**: `gateway.enabled = true` AND `gateway.tls.enabled = true`  
+**Requires**: cert-manager installed in the cluster with a ClusterIssuer or Issuer matching `gateway.tls.issuerName`
+
+```yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+spec:
+  secretName: <gateway.tls.secretName>  # defaults to <fullname>-tls
+  issuerRef:
+    name: letsencrypt-prod              # gateway.tls.issuerName
+    kind: ClusterIssuer                 # gateway.tls.issuerKind
+  dnsNames:
+    - <gateway.host>
+```
+
+cert-manager watches Certificate resources, creates a CertificateRequest to the named ClusterIssuer, completes the ACME challenge, and writes the issued certificate into the named Secret. The Gateway's HTTPS listener references that same Secret in its `tls.certificateRefs`. This is the Gateway API equivalent of the Ingress annotation approach ŌĆö both result in cert-manager provisioning a Secret that serves the TLS connection, but the trigger is different: an explicit Certificate resource here rather than watching an annotation on the Ingress object.
+
+**Why not the Ingress annotation approach for Gateway.** cert-manager's annotation-driven certificate provisioning (`cert-manager.io/cluster-issuer` on the resource) is stable for Ingress but requires an experimental feature gate on cert-manager for Gateway objects. The explicit Certificate resource works with any cert-manager version Ōēź 1.14 and does not require feature gate configuration.
+
+**Local testing.** The `letsencrypt-prod` and `letsencrypt-staging` ClusterIssuers require a public endpoint for ACME HTTP-01 challenges. For local kind clusters, replace `issuerName` with a `selfSigned` ClusterIssuer (no challenge required, cert issues immediately). See the prerequisite instructions for the exact commands.
 
 ---
 
@@ -407,13 +513,13 @@ spec:
 
 Declaring both `policyTypes: [Ingress, Egress]` makes the NetworkPolicy fully bilateral: the default is deny for both ingress and egress, and only the explicitly listed rules are allowed.
 
-**Ingress rule: `from: []` on port 8080.** An ingress rule with an empty `from` list matches all sources — any pod in any namespace in the cluster can reach port 8080. The template comment notes this should be tightened: in a real deployment, you would restrict ingress to the ingress-nginx namespace using a `namespaceSelector`. The broad default is chosen so the chart does not silently break ingress routing on first install for customers who haven't planned their namespace topology. The `extraIngress` field lets operators narrow this without modifying the template.
+**Ingress rule: `from: []` on port 8080.** An ingress rule with an empty `from` list matches all sources ŌĆö any pod in any namespace in the cluster can reach port 8080. The template comment notes this should be tightened: in a real deployment, you would restrict ingress to the ingress-nginx namespace using a `namespaceSelector`. The broad default is chosen so the chart does not silently break ingress routing on first install for customers who haven't planned their namespace topology. The `extraIngress` field lets operators narrow this without modifying the template.
 
 **Egress rule: DNS on port 53.** Every pod needs DNS for service discovery (`kubernetes.default.svc.cluster.local`), for pulling images (though the kubelet handles that, not the pod), and for any external hostname the workload resolves. This rule allows UDP and TCP DNS to any destination. TCP DNS is included alongside UDP because DNS responses larger than 512 bytes fall back to TCP; omitting TCP DNS causes subtle failures with DNSSEC-enabled resolvers or large DNS responses.
 
 The policy does **not** include a default egress rule for port 8080 back to the internet, for arbitrary database ports, or for any other application-specific traffic. Everything beyond DNS is denied by default. Operators add `extraEgress` rules for whatever the workload actually needs to reach (API calls, databases, cloud metadata servers, etc.).
 
-**CNI requirement.** NetworkPolicy resources are only enforced by a CNI plugin that implements the Kubernetes NetworkPolicy spec. The default CNI on `kind` (kindnet) does not enforce NetworkPolicy — policies exist in the API server but have no effect on actual traffic. The README documents using Calico on `kind` for local testing. On EKS with the VPC CNI, AWS VPC CNI Calico or Cilium can be installed for enforcement. On GKE, NetworkPolicy enforcement is built in when the feature is enabled on the cluster.
+**CNI requirement.** NetworkPolicy resources are only enforced by a CNI plugin that implements the Kubernetes NetworkPolicy spec. The default CNI on `kind` (kindnet) does not enforce NetworkPolicy ŌĆö policies exist in the API server but have no effect on actual traffic. The README documents using Calico on `kind` for local testing. On EKS with the VPC CNI, AWS VPC CNI Calico or Cilium can be installed for enforcement. On GKE, NetworkPolicy enforcement is built in when the feature is enabled on the cluster.
 
 ---
 
@@ -468,7 +574,7 @@ Common labels applied to all resources:
 |---|---|---|
 | `helm.sh/chart` | `sre-workload-0.1.0` | Chart identity for Helm tooling |
 | `app.kubernetes.io/name` | `sre-workload` | Application name |
-| `app.kubernetes.io/instance` | `<release-name>` | Release identity — distinguishes multiple installs of the same chart |
+| `app.kubernetes.io/instance` | `<release-name>` | Release identity ŌĆö distinguishes multiple installs of the same chart |
 | `app.kubernetes.io/version` | `latest` | Application version from `appVersion` |
 | `app.kubernetes.io/managed-by` | `Helm` | Ownership marker |
 
@@ -481,7 +587,7 @@ app.kubernetes.io/name: sre-workload
 app.kubernetes.io/instance: <release-name>
 ```
 
-Selector labels are intentionally a **subset** of common labels — the `version` label is excluded. If a version label were included in selectors, a chart upgrade that changes the `appVersion` would change the selector, which Kubernetes rejects: Deployment selectors are immutable after creation. Keeping version out of selectors means upgrades only update the pod template, not the selector.
+Selector labels are intentionally a **subset** of common labels ŌĆö the `version` label is excluded. If a version label were included in selectors, a chart upgrade that changes the `appVersion` would change the selector, which Kubernetes rejects: Deployment selectors are immutable after creation. Keeping version out of selectors means upgrades only update the pod template, not the selector.
 
 ### `sre-workload.serviceAccountName`
 
@@ -501,9 +607,9 @@ A shared helper that renders the probe mechanism block plus timing parameters. C
 ```
 
 The probe type is controlled by `probes.type`:
-- `http` → renders `httpGet: { path: <path>, port: http }`
-- `tcp` → renders `tcpSocket: { port: http }`
-- `exec` → renders `exec: { command: ["/bin/sh", "-c", "exit 0"] }` (placeholder, intended to be replaced with a real command)
+- `http` ŌåÆ renders `httpGet: { path: <path>, port: http }`
+- `tcp` ŌåÆ renders `tcpSocket: { port: http }`
+- `exec` ŌåÆ renders `exec: { command: ["/bin/sh", "-c", "exit 0"] }` (placeholder, intended to be replaced with a real command)
 
 Centralising probe rendering in one helper means switching the probe mechanism for all three probes is a single values change (`probes.type: tcp`) rather than editing three separate YAML blocks in the Deployment. The timing parameters (`initialDelaySeconds`, `periodSeconds`, `timeoutSeconds`, `failureThreshold`) are rendered from the per-probe values, with optional fields (`initialDelaySeconds`, `timeoutSeconds`) only rendered when non-zero to avoid unnecessary YAML noise.
 
@@ -518,14 +624,14 @@ Helm validates user-supplied values against this schema during `helm install`, `
 The schema declares three top-level objects as required: `image`, `service`, and `probes`. Within each:
 
 - `image.repository` and `image.tag` must be non-empty strings.
-- `service.port` and `service.targetPort` must be integers in the range 1–65535.
+- `service.port` and `service.targetPort` must be integers in the range 1ŌĆō65535.
 - `probes.type`, `probes.path`, and `probes.readyPath` must be present.
 
 ### Enum constraints
 
-- `image.pullPolicy` must be one of `Always`, `IfNotPresent`, `Never` — the only values Kubernetes accepts.
+- `image.pullPolicy` must be one of `Always`, `IfNotPresent`, `Never` ŌĆö the only values Kubernetes accepts.
 - `service.type` must be one of `ClusterIP`, `NodePort`, `LoadBalancer`.
-- `probes.type` must be one of `http`, `tcp`, `exec` — the three mechanisms the helper renders.
+- `probes.type` must be one of `http`, `tcp`, `exec` ŌĆö the three mechanisms the helper renders.
 
 ### Conditional validation
 
@@ -534,15 +640,19 @@ The schema declares three top-level objects as required: `image`, `service`, and
 "then": { "required": ["host"] }
 ```
 
-When `ingress.enabled = true`, `ingress.host` becomes a required field. This is enforced at two levels: by the JSON schema at `helm lint` / `helm install` time, and by the `required` template function in `ingress.yaml` at render time. Both guards produce errors before any resources are applied.
+The same conditional pattern applies to both `ingress` and `gateway`: when `enabled = true`, `host` becomes a required field. This is enforced at two levels — by the JSON schema at `helm lint` / `helm install` time, and by the `required` template function in the respective template at render time. Both guards produce errors before any resources are applied.
+
+The `gateway.tls.issuerKind` field has an additional enum constraint: only `ClusterIssuer` and `Issuer` are accepted. These are the two cert-manager issuer resource types; any other value would be accepted by the Kubernetes API but silently ignored by cert-manager.
 
 ### `serviceAccount.automountToken`
 
-Validated as a boolean. The schema does not enforce a default value — that lives in `values.yaml` — but it prevents non-boolean values (strings like `"false"`, integers) from silently passing through and being misinterpreted by the Kubernetes API.
+Validated as a boolean. The schema does not enforce a default value ŌĆö that lives in `values.yaml` ŌĆö but it prevents non-boolean values (strings like `"false"`, integers) from silently passing through and being misinterpreted by the Kubernetes API.
 
 ---
 
 ## Cloud overlay reference
+
+Four overlays are provided. The `values-aws.yaml` and `values-gcp.yaml` overlays use the Ingress routing mode (ingress-nginx). The `values-aws-gateway.yaml` and `values-gcp-gateway.yaml` overlays use the Gateway API routing mode (NGINX Gateway Fabric). Choose one pair per deployment.
 
 ### `values-aws.yaml`
 
@@ -556,6 +666,11 @@ storageClassName: gp3
 ingress:
   enabled: true
   className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+  tls:
+    enabled: true
+    secretName: sre-workload-tls
 
 nodeSelector:
   kubernetes.io/os: linux
@@ -563,7 +678,9 @@ nodeSelector:
 
 **`eks.amazonaws.com/role-arn`**: The EKS pod identity webhook reads this annotation on the ServiceAccount and injects `AWS_ROLE_ARN` and `AWS_WEB_IDENTITY_TOKEN_FILE` into all pods running under it. The actual ARN comes from the Terraform `modules/irsa` output for the workload's IRSA role.
 
-**`storageClassName: gp3`**: Sets the storage class for any PersistentVolumeClaim the chart creates (currently none — the workload is assumed stateless). Present to ensure that if a PVC is added in future, it uses gp3 rather than the older gp2 default.
+**`cert-manager.io/cluster-issuer: letsencrypt-prod`**: cert-manager watches Ingress resources for this annotation. When found, it creates a CertificateRequest to the named ClusterIssuer, completes the ACME HTTP-01 challenge through ingress-nginx, and writes the resulting certificate into `sre-workload-tls`. The ClusterIssuers are created by `modules/k8s-platform` when `acme_email` is set. Use `letsencrypt-staging` to validate ACME configuration before switching to `letsencrypt-prod`.
+
+**`storageClassName: gp3`**: Sets the storage class for any PersistentVolumeClaim the chart creates (currently none ŌĆö the workload is assumed stateless). Present to ensure that if a PVC is added in future, it uses gp3 rather than the older gp2 default.
 
 **`nodeSelector: kubernetes.io/os: linux`**: Ensures pods are scheduled only on Linux nodes. Present because EKS clusters can have Windows node pools, and the container image is Linux-only.
 
@@ -579,6 +696,11 @@ storageClassName: standard-rwo
 ingress:
   enabled: true
   className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+  tls:
+    enabled: true
+    secretName: sre-workload-tls
 
 nodeSelector:
   kubernetes.io/os: linux
@@ -586,9 +708,87 @@ nodeSelector:
 
 **`iam.gke.io/gcp-service-account`**: GKE's metadata proxy reads this annotation and issues GCP access tokens for the named Google Service Account to pods running under this ServiceAccount. The GSA email comes from the Terraform `modules/workload-identity` output.
 
-**`storageClassName: standard-rwo`**: GKE's `standard-rwo` (Read-Write Once) storage class provisions `pd-ssd`-backed Persistent Disks with `ReadWriteOnce` access mode. `ReadWriteOnce` is the correct mode for per-pod storage in a Deployment (multiple pods cannot mount the same PD in read-write mode simultaneously).
+**`storageClassName: standard-rwo`**: GKE's `standard-rwo` (Read-Write Once) storage class provisions `pd-ssd`-backed Persistent Disks with `ReadWriteOnce` access mode.
 
-**`className: nginx`**: Uses the same ingress-nginx controller installed by the k8s-platform module. GKE's native Gateway API is documented as an alternative in the overlay comments.
+**`cert-manager.io/cluster-issuer`**: Same annotation-driven cert-manager flow as the AWS overlay. The ACME HTTP-01 challenge is completed through ingress-nginx identically on GKE.
+
+### `values-aws-gateway.yaml`
+
+```yaml
+serviceAccount:
+  annotations:
+    eks.amazonaws.com/role-arn: ""
+
+storageClassName: gp3
+
+ingress:
+  enabled: false
+
+gateway:
+  enabled: true
+  className: nginx
+  host: ""           # set via --set gateway.host=sre.example.com
+  createGateway: true
+  tls:
+    enabled: true
+    secretName: ""   # defaults to <fullname>-tls
+    issuerName: letsencrypt-prod
+    issuerKind: ClusterIssuer
+
+nodeSelector:
+  kubernetes.io/os: linux
+```
+
+Install with:
+```bash
+helm install sre-workload . \
+  -f values.yaml -f values-aws-gateway.yaml \
+  --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=<IRSA_ARN> \
+  --set gateway.host=sre.example.com
+```
+
+**`ingress.enabled: false`**: Disables the Ingress resource so both routing modes are not active simultaneously.
+
+**`gateway.className: nginx`**: Matches the `GatewayClass` named `nginx` created by NGINX Gateway Fabric (`install_nginx_gateway_fabric = true` in Terraform). The Gateway API CRDs are installed automatically by the NGF Helm chart.
+
+**`gateway.tls.issuerName: letsencrypt-prod`**: The chart creates an explicit `cert-manager.io/v1 Certificate` resource (not an annotation on the Gateway). cert-manager provisions the TLS Secret directly; the Gateway's HTTPS listener references that Secret in `tls.certificateRefs`.
+
+### `values-gcp-gateway.yaml`
+
+```yaml
+serviceAccount:
+  annotations:
+    iam.gke.io/gcp-service-account: ""
+
+storageClassName: standard-rwo
+
+ingress:
+  enabled: false
+
+gateway:
+  enabled: true
+  className: nginx
+  host: ""
+  createGateway: true
+  tls:
+    enabled: true
+    secretName: ""
+    issuerName: letsencrypt-prod
+    issuerKind: ClusterIssuer
+
+nodeSelector:
+  kubernetes.io/os: linux
+```
+
+Install with:
+```bash
+helm install sre-workload . \
+  -f values.yaml -f values-gcp-gateway.yaml \
+  --set serviceAccount.annotations."iam\.gke\.io/gcp-service-account"=<GSA_EMAIL> \
+  --set gateway.host=sre.example.com
+```
+
+**GKE-native Gateway controller.** GKE ships its own Gateway API implementation (`gke-l7-global-external-managed` GatewayClass) which integrates with Google Cloud Load Balancers natively. To use it instead of NGINX Gateway Fabric, set `gateway.className` to the appropriate GKE GatewayClass name — no other chart changes are required. The NGF-based overlay is the default to keep routing behaviour consistent between AWS and GCP deployments.
 
 ---
 
@@ -596,40 +796,48 @@ nodeSelector:
 
 | Key | Default | Overlay (AWS) | Overlay (GCP) |
 |---|---|---|---|
-| `image.repository` | `ghcr.io/e2b-dev/sre-interview` | — | — |
-| `image.tag` | `latest` | — | — |
-| `image.pullPolicy` | `IfNotPresent` | — | — |
-| `replicaCount` | `3` | — | — |
-| `service.type` | `ClusterIP` | — | — |
-| `service.port` | `8080` | — | — |
-| `probes.type` | `http` | — | — |
-| `probes.path` | `/healthz` | — | — |
-| `probes.readyPath` | `/readyz` | — | — |
-| `probes.startup.failureThreshold` | `30` | — | — |
-| `probes.startup.periodSeconds` | `5` | — | — |
-| `probes.readiness.periodSeconds` | `10` | — | — |
-| `probes.liveness.periodSeconds` | `15` | — | — |
-| `resources.requests.cpu` | `100m` | — | — |
-| `resources.requests.memory` | `128Mi` | — | — |
-| `resources.limits.cpu` | `500m` | — | — |
-| `resources.limits.memory` | `512Mi` | — | — |
-| `autoscaling.enabled` | `true` | — | — |
-| `autoscaling.minReplicas` | `3` | — | — |
-| `autoscaling.maxReplicas` | `10` | — | — |
-| `autoscaling.targetCPUUtilizationPercentage` | `70` | — | — |
-| `autoscaling.targetMemoryUtilizationPercentage` | `80` | — | — |
-| `podDisruptionBudget.minAvailable` | `1` | — | — |
-| `rollout.maxUnavailable` | `0` | — | — |
-| `rollout.maxSurge` | `25%` | — | — |
-| `topologySpread.topologyKey` | `topology.kubernetes.io/zone` | — | — |
-| `topologySpread.whenUnsatisfiable` | `ScheduleAnyway` | — | — |
-| `serviceAccount.automountToken` | `false` | — | — |
+| `image.repository` | `ghcr.io/e2b-dev/sre-interview` | ŌĆö | ŌĆö |
+| `image.tag` | `latest` | ŌĆö | ŌĆö |
+| `image.pullPolicy` | `IfNotPresent` | ŌĆö | ŌĆö |
+| `replicaCount` | `3` | ŌĆö | ŌĆö |
+| `service.type` | `ClusterIP` | ŌĆö | ŌĆö |
+| `service.port` | `8080` | ŌĆö | ŌĆö |
+| `probes.type` | `http` | ŌĆö | ŌĆö |
+| `probes.path` | `/healthz` | ŌĆö | ŌĆö |
+| `probes.readyPath` | `/readyz` | ŌĆö | ŌĆö |
+| `probes.startup.failureThreshold` | `30` | ŌĆö | ŌĆö |
+| `probes.startup.periodSeconds` | `5` | ŌĆö | ŌĆö |
+| `probes.readiness.periodSeconds` | `10` | ŌĆö | ŌĆö |
+| `probes.liveness.periodSeconds` | `15` | ŌĆö | ŌĆö |
+| `resources.requests.cpu` | `100m` | ŌĆö | ŌĆö |
+| `resources.requests.memory` | `128Mi` | ŌĆö | ŌĆö |
+| `resources.limits.cpu` | `500m` | ŌĆö | ŌĆö |
+| `resources.limits.memory` | `512Mi` | ŌĆö | ŌĆö |
+| `autoscaling.enabled` | `true` | ŌĆö | ŌĆö |
+| `autoscaling.minReplicas` | `3` | ŌĆö | ŌĆö |
+| `autoscaling.maxReplicas` | `10` | ŌĆö | ŌĆö |
+| `autoscaling.targetCPUUtilizationPercentage` | `70` | ŌĆö | ŌĆö |
+| `autoscaling.targetMemoryUtilizationPercentage` | `80` | ŌĆö | ŌĆö |
+| `podDisruptionBudget.minAvailable` | `1` | ŌĆö | ŌĆö |
+| `rollout.maxUnavailable` | `0` | ŌĆö | ŌĆö |
+| `rollout.maxSurge` | `25%` | ŌĆö | ŌĆö |
+| `topologySpread.topologyKey` | `topology.kubernetes.io/zone` | ŌĆö | ŌĆö |
+| `topologySpread.whenUnsatisfiable` | `ScheduleAnyway` | ŌĆö | ŌĆö |
+| `serviceAccount.automountToken` | `false` | ŌĆö | ŌĆö |
 | `serviceAccount.annotations` | `{}` | `eks.amazonaws.com/role-arn: ""` | `iam.gke.io/gcp-service-account: ""` |
-| `podSecurityContext.runAsUser` | `65532` | — | — |
-| `securityContext.readOnlyRootFilesystem` | `true` | — | — |
+| `podSecurityContext.runAsUser` | `65532` | ŌĆö | ŌĆö |
+| `securityContext.readOnlyRootFilesystem` | `true` | ŌĆö | ŌĆö |
 | `networkPolicy.enabled` | `true` | — | — |
 | `ingress.enabled` | `false` | `true` | `true` |
 | `ingress.className` | `nginx` | `nginx` | `nginx` |
+| `ingress.tls.enabled` | `false` | `true` | `true` |
+| `ingress.tls.secretName` | `""` | `sre-workload-tls` | `sre-workload-tls` |
+| `gateway.enabled` | `false` | `false` (gateway overlay: `true`) | `false` (gateway overlay: `true`) |
+| `gateway.className` | `nginx` | — | — |
+| `gateway.createGateway` | `true` | — | — |
+| `gateway.tls.enabled` | `false` | — (gateway overlay: `true`) | — (gateway overlay: `true`) |
+| `gateway.tls.issuerName` | `letsencrypt-prod` | — | — |
+| `gateway.tls.issuerKind` | `ClusterIssuer` | — | — |
 | `storageClassName` | `""` | `gp3` | `standard-rwo` |
 | `nodeSelector` | `{}` | `kubernetes.io/os: linux` | `kubernetes.io/os: linux` |
 | `serviceMonitor.enabled` | `false` | — | — |

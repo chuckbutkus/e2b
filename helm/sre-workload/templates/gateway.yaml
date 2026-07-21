@@ -1,0 +1,33 @@
+{{- if and .Values.gateway.enabled .Values.gateway.createGateway }}
+{{- $tlsSecret := default (printf "%s-tls" (include "sre-workload.fullname" .)) .Values.gateway.tls.secretName }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: {{ include "sre-workload.fullname" . }}
+  labels:
+    {{- include "sre-workload.labels" . | nindent 4 }}
+spec:
+  gatewayClassName: {{ .Values.gateway.className }}
+  listeners:
+    - name: http
+      port: 80
+      protocol: HTTP
+      hostname: {{ required "gateway.host is required when gateway.enabled=true" .Values.gateway.host | quote }}
+      allowedRoutes:
+        namespaces:
+          from: Same
+    {{- if .Values.gateway.tls.enabled }}
+    - name: https
+      port: 443
+      protocol: HTTPS
+      hostname: {{ .Values.gateway.host | quote }}
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: {{ $tlsSecret | quote }}
+      allowedRoutes:
+        namespaces:
+          from: Same
+    {{- end }}
+{{- end }}

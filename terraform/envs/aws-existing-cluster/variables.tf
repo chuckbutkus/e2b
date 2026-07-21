@@ -33,6 +33,11 @@ variable "install_metrics_server" {
 # the customer may already have them installed and a duplicate install would
 # conflict. Opt in explicitly after confirming the cluster state.
 
+variable "install_nginx_gateway_fabric" {
+  type    = bool
+  default = false
+}
+
 variable "install_cert_manager" {
   type    = bool
   default = false

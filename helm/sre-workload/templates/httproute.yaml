@@ -1,0 +1,35 @@
+{{- if .Values.gateway.enabled }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "sre-workload.fullname" . }}
+  labels:
+    {{- include "sre-workload.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    {{- if .Values.gateway.createGateway }}
+    # Self-created Gateway (this chart owns it). Pin to the https listener
+    # when TLS is enabled so HTTP-only traffic is not accepted on port 443.
+    - name: {{ include "sre-workload.fullname" . }}
+      namespace: {{ .Release.Namespace }}
+      sectionName: {{ .Values.gateway.tls.enabled | ternary "https" "http" | quote }}
+    {{- else }}
+    # Pre-existing shared Gateway — operators manage the Gateway resource,
+    # this chart only creates the HTTPRoute.
+    - name: {{ required "gateway.parentRef.name is required when gateway.createGateway=false" .Values.gateway.parentRef.name | quote }}
+      namespace: {{ default .Release.Namespace .Values.gateway.parentRef.namespace | quote }}
+      {{- with .Values.gateway.parentRef.sectionName }}
+      sectionName: {{ . | quote }}
+      {{- end }}
+    {{- end }}
+  hostnames:
+    - {{ required "gateway.host is required when gateway.enabled=true" .Values.gateway.host | quote }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: {{ include "sre-workload.fullname" . }}
+          port: {{ .Values.service.port }}
+{{- end }}

@@ -134,6 +134,34 @@ ingress:
     enabled: false
     secretName: ""
 
+# Gateway API mode — alternative to Ingress; requires NGINX Gateway Fabric
+# (install_nginx_gateway_fabric=true in Terraform) and the Gateway API CRDs.
+# Use values-{aws,gcp}-gateway.yaml overlays instead of values-{aws,gcp}.yaml
+# to deploy in Gateway API mode. Ingress and gateway are not mutually exclusive
+# but enabling both is unusual; set ingress.enabled=false when using gateway.
+gateway:
+  enabled: false
+  # GatewayClass name installed by NGINX Gateway Fabric ("nginx" by default).
+  className: nginx
+  # Hostname this Gateway and HTTPRoute serve. Required when gateway.enabled=true.
+  host: ""
+  # createGateway=true: this chart owns a Gateway resource (one per workload).
+  # createGateway=false: the HTTPRoute attaches to a pre-existing shared Gateway;
+  #   supply parentRef.name (and parentRef.namespace if cross-namespace) instead.
+  createGateway: true
+  parentRef:
+    name: ""
+    namespace: ""  # empty = same namespace as the HTTPRoute
+    sectionName: ""  # optional: pin to a specific listener (e.g. "https")
+  tls:
+    enabled: false
+    # Secret name cert-manager writes the TLS certificate to.
+    # Defaults to <fullname>-tls when empty.
+    secretName: ""
+    # ClusterIssuer created by modules/k8s-platform (acme_email must be set).
+    issuerName: letsencrypt-prod
+    issuerKind: ClusterIssuer
+
 serviceMonitor:
   enabled: false # requires Prometheus Operator CRDs; opt-in only
   interval: 30s
